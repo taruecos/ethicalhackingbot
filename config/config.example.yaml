@@ -1,0 +1,61 @@
+# Ethical Hacking Bot Configuration
+# Copy to config.yaml and fill in your values
+
+agent:
+  # LLM provider for the AI agent
+  provider: "anthropic"  # or "openai"
+  model: "claude-sonnet-4-20250514"
+  max_tokens: 4096
+
+platforms:
+  intigriti:
+    enabled: true
+    api_key: ""
+    # Filter programs: "all", "paid_only", "vdp_only"
+    program_filter: "paid_only"
+
+  hackerone:
+    enabled: false
+    api_username: ""
+    api_token: ""
+    program_filter: "paid_only"
+
+  bugcrowd:
+    enabled: false
+    api_token: ""
+
+  yeswehack:
+    enabled: false
+    api_key: ""
+
+  immunefi:
+    enabled: false
+
+scanner:
+  # Max concurrent requests per target
+  concurrency: 5
+  # Delay between requests (seconds) — respect rate limits
+  request_delay: 1.0
+  # Timeout per request (seconds)
+  timeout: 30
+  # Max depth for crawling
+  max_crawl_depth: 3
+
+  # Scanner modules to enable
+  modules:
+    idor: true
+    access_control: true
+    info_disclosure: true
+
+reporter:
+  # Output directory for reports
+  output_dir: "./reports"
+  # Auto-submit to platform (careful!)
+  auto_submit: false
+
+database:
+  url: "sqlite+aiosqlite:///./data/findings.db"
+
+logging:
+  level: "INFO"
+  file: "./logs/agent.log"
