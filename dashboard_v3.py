@@ -489,7 +489,8 @@ a:hover{text-decoration:underline}
 .result-sev{font-size:0.7rem;font-weight:700;padding:2px 6px;border-radius:4px}
 
 /* ── Programs ── */
-.program-card{display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg);border-radius:10px;margin-bottom:6px}
+.program-card{display:flex;flex-direction:column;gap:4px;padding:12px;background:var(--bg);border-radius:10px;margin-bottom:6px;cursor:pointer;transition:border .15s;border:1px solid transparent}
+.program-card:hover{border-color:var(--accent);background:var(--accent-glow)}
 .program-name{font-weight:600;font-size:0.9rem;flex:1}
 .program-meta{font-size:0.75rem;color:var(--dim)}
 
@@ -617,8 +618,20 @@ a:hover{text-decoration:underline}
   <!-- ── Programs Panel ── -->
   <div class="panel" id="panel-programs">
     <div class="card">
-      <div class="card-header"><span class="card-title">Bug Bounty Programs</span><button class="card-action" id="fetchPrograms">Fetch Latest</button></div>
-      <div id="programsList"><div class="empty"><div class="empty-icon">&#x1f3af;</div>Loading...</div></div>
+      <div class="card-header">
+        <span class="card-title">Bug Bounty Programs</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="platformFilter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:8px;font-size:0.8rem;cursor:pointer">
+            <option value="all">All Platforms</option>
+            <option value="INTIGRITI" selected>Intigriti</option>
+            <option value="HACKERONE">HackerOne</option>
+            <option value="BUGCROWD">Bugcrowd</option>
+            <option value="YESWEHACK">YesWeHack</option>
+          </select>
+          <span id="programsCount" style="font-family:var(--mono);font-size:0.8rem;color:var(--dim)"></span>
+        </div>
+      </div>
+      <div id="programsList"><div class="empty"><div class="empty-icon">&#x1f3af;</div>Loading programs...</div></div>
     </div>
   </div>
 
@@ -706,7 +719,7 @@ $("nav").addEventListener("click", function(e){
 
 /* ── Boot ── */
 function boot() {
-  pollStatus(); pollScans(); loadResults(); loadAllFindings();
+  pollStatus(); pollScans(); loadResults(); loadAllFindings(); loadPrograms();
   setInterval(pollStatus, 5000);
   setInterval(pollScans, 4000);
 }
@@ -984,21 +997,110 @@ $("modalOverlay").addEventListener("click", function(e){ if(e.target === $("moda
 document.addEventListener("keydown", function(e){ if(e.key==="Escape") window._closeModal(); });
 
 /* ── Programs ── */
-$("fetchPrograms").addEventListener("click", function(){
-  $("programsList").innerHTML = '<div class="empty">Fetching programs...</div>';
-  api("/api/bounty/fetch", {method:"POST"}).then(function(){ setTimeout(loadPrograms, 2000); });
-});
+var allPrograms = [];
+
+$("platformFilter").addEventListener("change", function(){ renderPrograms(); });
 
 function loadPrograms() {
-  api("/api/programs").then(function(r){
-    var el = $("programsList");
-    var progs = r.data.programs || [];
-    if (!progs.length) { el.innerHTML = '<div class="empty"><div class="empty-icon">&#x1f3af;</div>No programs cached. Click "Fetch Latest" to load.</div>'; return; }
-    el.innerHTML = progs.slice(0,50).map(function(p){
-      return '<div class="program-card"><div class="program-name">'+esc(p.name||p.handle||"Unknown")+'</div><div class="program-meta">'+(p.targets_count||"?")+' targets</div></div>';
-    }).join("");
+  var el = $("programsList");
+  el.innerHTML = '<div class="empty">Loading programs...</div>';
+  // Sync from Intigriti first, then load from cache
+  api("/api/bounty/fetch", {method:"POST"}).then(function(){
+    return api("/api/intigriti/programs");
+  }).then(function(r){
+    var records = r.data.records || r.data.programs || [];
+    allPrograms = records;
+    renderPrograms();
+  }).catch(function(e){
+    el.innerHTML = '<div class="empty" style="color:var(--red)">Failed to load programs</div>';
   });
 }
+
+function renderPrograms() {
+  var el = $("programsList");
+  var filter = $("platformFilter").value;
+  var progs = allPrograms;
+  // Filter by platform (for now all loaded are Intigriti, but ready for multi-platform)
+  if (filter !== "all") {
+    progs = progs.filter(function(p){ return (p.platform || "INTIGRITI").toUpperCase() === filter; });
+  }
+  $("programsCount").textContent = progs.length + " programs";
+  if (!progs.length) { el.innerHTML = '<div class="empty"><div class="empty-icon">&#x1f3af;</div>No programs found for this platform.</div>'; return; }
+  el.innerHTML = progs.slice(0,50).map(function(p){
+    var name = p.name || p.handle || "Unknown";
+    var status = (p.status && p.status.value) ? p.status.value : (p.status || "");
+    var minB = (p.minBounty && p.minBounty.value != null) ? p.minBounty.value : (p.min_bounty || "");
+    var maxB = (p.maxBounty && p.maxBounty.value != null) ? p.maxBounty.value : (p.max_bounty || "");
+    var bountyText = (minB || maxB) ? (minB + " - " + maxB + " EUR") : "No bounty info";
+    var following = p.following ? '<span style="color:var(--accent);font-size:0.75rem;margin-left:8px">Following</span>' : '';
+    var confidential = (p.confidentialityLevel && p.confidentialityLevel.value === "confidential") || p.confidentiality === "confidential" ? '<span style="color:var(--orange);font-size:0.75rem;margin-left:8px">Confidential</span>' : '';
+    var domainCount = (p.domains && p.domains.length) ? p.domains.length : (p.scope && p.scope.length ? p.scope.length : "?");
+    var pid = p.id || p.intigriti_id || "";
+    return '<div class="program-card" style="cursor:pointer" onclick="window._viewProgram(\''+esc(pid)+'\')">' +
+      '<div class="program-name">'+esc(name)+following+confidential+'</div>' +
+      '<div class="program-meta" style="display:flex;gap:16px;margin-top:4px">' +
+        '<span>'+esc(domainCount)+' targets</span>' +
+        '<span style="color:var(--accent)">'+esc(bountyText)+'</span>' +
+      '</div></div>';
+  }).join("");
+}
+
+window._viewProgram = function(pid) {
+  if (!pid) return;
+  var el = $("modalContent");
+  el.innerHTML = '<div class="empty">Loading program details...</div>';
+  $("modalOverlay").style.display = "flex";
+  api("/api/intigriti/programs/" + pid).then(function(r){
+    var p = r.data;
+    var html = '<button class="modal-close" onclick="window._closeModal()">x</button>';
+    html += '<h2 style="margin-bottom:16px">'+esc(p.name || p.handle || "Program")+'</h2>';
+    // Scope / Domains
+    var domains = (p.domains && p.domains.content) ? p.domains.content : [];
+    if (domains.length) {
+      html += '<div class="modal-section"><h3>Scope ('+domains.length+' targets)</h3>';
+      domains.forEach(function(d){
+        var tier = (d.tier && d.tier.value) ? d.tier.value : "";
+        html += '<div class="modal-field" style="margin-bottom:4px"><span style="color:var(--accent)">'+esc(d.endpoint || d.asset || "")+'</span>';
+        if (tier) html += ' <span style="color:var(--dim);font-size:0.75rem">['+esc(tier)+']</span>';
+        if (d.description) html += '<br><span style="color:var(--dim);font-size:0.8rem">'+esc(d.description)+'</span>';
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+    // Bounty
+    var minB = (p.minBounty && p.minBounty.value != null) ? p.minBounty.value : "";
+    var maxB = (p.maxBounty && p.maxBounty.value != null) ? p.maxBounty.value : "";
+    if (minB || maxB) {
+      html += '<div class="modal-section"><h3>Bounty Range</h3><div class="modal-field">'+esc(minB)+' - '+esc(maxB)+' EUR</div></div>';
+    }
+    // Scan button
+    html += '<div style="margin-top:20px"><button style="background:var(--accent);color:#000;border:none;padding:10px 20px;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.9rem" onclick="window._scanFromProgram(\''+esc(p.id || "")+'\')">Scan This Target</button></div>';
+    el.innerHTML = html;
+  }).catch(function(e){
+    el.innerHTML = '<div class="empty" style="color:var(--red)">Failed to load program details</div>';
+  });
+};
+
+window._scanFromProgram = function(pid) {
+  // Find first domain from program and launch scan
+  var prog = allPrograms.find(function(p){ return (p.id || p.intigriti_id) === pid; });
+  if (!prog) return;
+  window._closeModal();
+  // Switch to scans tab
+  $("nav").querySelectorAll("button").forEach(function(b){ b.className=""; });
+  $("nav").querySelector("[data-tab=scans]").className = "active";
+  document.querySelectorAll(".panel").forEach(function(p){ p.className="panel"; });
+  $("panel-scans").className = "panel active";
+  // Use first scope domain
+  var domains = (prog.domains && prog.domains.content) ? prog.domains.content : (prog.scope || []);
+  if (domains.length) {
+    var target = domains[0].endpoint || domains[0].asset || "";
+    if (target) {
+      $("targetInput").value = target;
+      $("scanBtn").click();
+    }
+  }
+};
 
 /* ── Utils ── */
 function esc(s) { var d=document.createElement("div"); d.appendChild(document.createTextNode(String(s||""))); return d.innerHTML; }

@@ -1,16 +1,30 @@
 """Intigriti Researcher API Connector"""
 import os
 import httpx
+from pathlib import Path
 from typing import Optional
 
 BASE_URL = "https://api.intigriti.com/external/researcher/v1"
+
+
+def _load_token_from_config() -> str:
+    """Fallback: read token from config.yaml if env var not set."""
+    try:
+        import yaml
+        config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
+        if config_path.exists():
+            data = yaml.safe_load(config_path.read_text())
+            return data.get("platforms", {}).get("intigriti", {}).get("api_key", "")
+    except Exception:
+        pass
+    return ""
 
 
 class IntigritiClient:
     """Client for the Intigriti Researcher API (v1.0 Beta)."""
 
     def __init__(self, api_token: Optional[str] = None):
-        self.token = api_token or os.environ.get("INTIGRITI_API_TOKEN", "")
+        self.token = api_token or os.environ.get("INTIGRITI_API_TOKEN", "") or _load_token_from_config()
         self.headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json",
