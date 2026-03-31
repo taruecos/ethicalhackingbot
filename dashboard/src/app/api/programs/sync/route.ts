@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { listPrograms, getProgramDetail, normalizeProgram } from "@/lib/intigriti";
 
@@ -54,8 +55,8 @@ export async function POST() {
           slug: normalized.slug,
           url: normalized.url,
           intigritiId: normalized.intigritiId,
-          scope: normalized.scope as unknown as Record<string, unknown>,
-          compliance: normalized.compliance as unknown as Record<string, unknown>,
+          scope: normalized.scope as Prisma.InputJsonValue,
+          compliance: normalized.compliance as Prisma.InputJsonValue,
           minBounty: normalized.minBounty ?? null,
           maxBounty: normalized.maxBounty ?? null,
           currency: normalized.currency,
@@ -69,8 +70,8 @@ export async function POST() {
           name: normalized.name,
           url: normalized.url,
           intigritiId: normalized.intigritiId,
-          scope: normalized.scope as unknown as Record<string, unknown>,
-          compliance: normalized.compliance as unknown as Record<string, unknown>,
+          scope: normalized.scope as Prisma.InputJsonValue,
+          compliance: normalized.compliance as Prisma.InputJsonValue,
           minBounty: normalized.minBounty ?? null,
           maxBounty: normalized.maxBounty ?? null,
           currency: normalized.currency,
