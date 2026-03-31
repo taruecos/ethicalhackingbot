@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
     const params = new URLSearchParams({ limit, offset });
     if (following) params.set("following", following);
 
-    const res = await fetch(`${botUrl}/api/intigriti/programs?${params}`, {
+    const res = await fetch(`${botUrl}/api/programs?${params}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await res.json();
