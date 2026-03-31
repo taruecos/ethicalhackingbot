@@ -26,10 +26,14 @@ app = FastAPI(title="BugBountyBot Dashboard")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 active_scans: dict = {}
+scan_queue: list = []
+queue_running: bool = False
+queue_task = None
 RESULTS_DIR = Path("/root/ethicalhackingbot/results")
 BOT_START_TIME = time.time()
 bot_logs: list = []
 MAX_LOGS = 500
+compliance_cache: dict = {}  # program_id -> compliance info
 
 def add_bot_log(level: str, module: str, message: str, scan_id: str = ""):
     entry = {
@@ -329,6 +333,247 @@ async def intigriti_payouts(
     return data
 
 
+@app.get("/api/intigriti/programs/{program_id}/compliance")
+async def intigriti_compliance(program_id: str, token: str = Depends(check_auth_flexible)):
+    """Get compliance/rules of engagement for a specific program."""
+    global compliance_cache
+    if program_id in compliance_cache:
+        return compliance_cache[program_id]
+    from src.platforms.intigriti import IntigritiClient
+    client = IntigritiClient()
+    detail = await client.get_program_detail(program_id)
+    comp = client.extract_compliance(detail)
+    # Add scope info
+    domains = []
+    dom_data = detail.get("domains", {})
+    if isinstance(dom_data, dict) and "content" in dom_data:
+        for d in dom_data["content"]:
+            domains.append({
+                "id": d.get("id", ""),
+                "endpoint": d.get("endpoint", ""),
+                "type": d.get("type", {}).get("value", "url") if isinstance(d.get("type"), dict) else str(d.get("type", "")),
+                "tier": d.get("tier", {}).get("value", "") if isinstance(d.get("tier"), dict) else str(d.get("tier", "")),
+                "description": d.get("description", ""),
+            })
+    comp["domains"] = domains
+    comp["program_name"] = detail.get("name", "")
+    comp["program_id"] = program_id
+    compliance_cache[program_id] = comp
+    return comp
+
+
+# ── Scan Queue ─────────────────────────────────────────
+
+@app.get("/api/queue")
+async def queue_list(token: str = Depends(check_auth_flexible)):
+    """List all items in the scan queue."""
+    return {"queue": scan_queue, "running": queue_running}
+
+
+@app.post("/api/queue/add")
+async def queue_add(request: Request, token: str = Depends(check_auth_flexible)):
+    """Add target(s) to the scan queue."""
+    body = await request.json()
+    targets = body.get("targets", [])
+    program_name = body.get("program_name", "")
+    program_id = body.get("program_id", "")
+    compliance = body.get("compliance", {})
+    added = []
+    for t in targets:
+        url = t if isinstance(t, str) else t.get("url", t.get("endpoint", ""))
+        if not url:
+            continue
+        item_id = str(uuid.uuid4())[:8]
+        item = {
+            "id": item_id,
+            "target": url.strip(),
+            "program_name": program_name,
+            "program_id": program_id,
+            "status": "queued",
+            "phases": [],
+            "findings_count": 0,
+            "findings": [],
+            "error": None,
+            "added_at": datetime.now().isoformat(),
+            "started_at": None,
+            "finished_at": None,
+            "report": None,
+            "compliance": compliance,
+        }
+        scan_queue.append(item)
+        added.append(item_id)
+    return {"added": len(added), "ids": added, "queue_size": len(scan_queue)}
+
+
+@app.post("/api/queue/start")
+async def queue_start(token: str = Depends(check_auth_flexible)):
+    """Start processing the scan queue."""
+    global queue_running, queue_task
+    if queue_running:
+        return {"status": "already_running"}
+    pending = [q for q in scan_queue if q["status"] == "queued"]
+    if not pending:
+        return {"status": "empty", "message": "No queued items"}
+    queue_running = True
+    queue_task = asyncio.create_task(_process_queue())
+    return {"status": "started", "pending": len(pending)}
+
+
+@app.post("/api/queue/stop")
+async def queue_stop(token: str = Depends(check_auth_flexible)):
+    """Stop queue processing after current scan finishes."""
+    global queue_running
+    queue_running = False
+    return {"status": "stopping"}
+
+
+@app.delete("/api/queue/{item_id}")
+async def queue_remove(item_id: str, token: str = Depends(check_auth_flexible)):
+    """Remove an item from the queue."""
+    global scan_queue
+    scan_queue = [q for q in scan_queue if q["id"] != item_id]
+    return {"status": "removed"}
+
+
+@app.post("/api/queue/clear")
+async def queue_clear(request: Request, token: str = Depends(check_auth_flexible)):
+    """Clear completed/errored items from queue."""
+    global scan_queue
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    clear_type = body.get("type", "finished")  # finished, all
+    if clear_type == "all":
+        scan_queue = [q for q in scan_queue if q["status"] == "scanning"]
+    else:
+        scan_queue = [q for q in scan_queue if q["status"] in ("queued", "scanning")]
+    return {"status": "cleared", "remaining": len(scan_queue)}
+
+
+async def _process_queue():
+    """Process scan queue items one by one."""
+    global queue_running
+    add_bot_log("INFO", "queue", "Queue processing started")
+    try:
+        while queue_running:
+            pending = [q for q in scan_queue if q["status"] == "queued"]
+            if not pending:
+                break
+            item = pending[0]
+            item["status"] = "scanning"
+            item["started_at"] = datetime.now().isoformat()
+            add_bot_log("INFO", "queue", f"Scanning {item['target']} ({item['program_name']})", item["id"])
+
+            try:
+                # Build auth headers from compliance (user-agent, request header)
+                auth_headers = {}
+                comp = item.get("compliance", {})
+                if comp.get("user_agent"):
+                    auth_headers["User-Agent"] = comp["user_agent"]
+                if comp.get("request_header"):
+                    # Format: "Header-Name: value"
+                    parts = comp["request_header"].split(":", 1)
+                    if len(parts) == 2:
+                        auth_headers[parts[0].strip()] = parts[1].strip()
+
+                # Phase tracking
+                def phase_update(phase_name):
+                    item["phases"].append({
+                        "name": phase_name,
+                        "time": datetime.now().isoformat(),
+                    })
+
+                from run_full_scan import run_full_scan
+                output_dir = str(RESULTS_DIR / f"queue_{item['id']}")
+                result = await run_full_scan(
+                    item["target"],
+                    output_dir=output_dir,
+                    phase_callback=lambda pn: phase_update(pn),
+                    auth_headers=auth_headers,
+                )
+
+                item["status"] = "complete"
+                item["finished_at"] = datetime.now().isoformat()
+                if result and isinstance(result, dict):
+                    findings = result.get("findings", [])
+                    item["findings"] = findings
+                    item["findings_count"] = len(findings)
+                    # Generate report
+                    item["report"] = _generate_report(item, findings)
+                add_bot_log("INFO", "queue", f"Scan complete: {item['target']} — {item['findings_count']} findings", item["id"])
+
+            except Exception as e:
+                item["status"] = "error"
+                item["error"] = str(e)
+                item["finished_at"] = datetime.now().isoformat()
+                add_bot_log("ERROR", "queue", f"Scan failed: {item['target']} — {e}", item["id"])
+
+            # Small delay between scans
+            await asyncio.sleep(2)
+
+    finally:
+        queue_running = False
+        add_bot_log("INFO", "queue", "Queue processing stopped")
+
+
+def _generate_report(item: dict, findings: list) -> dict:
+    """Generate a formatted report for Intigriti submission."""
+    target = item["target"]
+    program = item.get("program_name", "Unknown")
+    severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+    sorted_findings = sorted(findings, key=lambda f: severity_order.get(f.get("severity", "INFO"), 5))
+
+    reports = []
+    for i, f in enumerate(sorted_findings):
+        sev = f.get("severity", "INFO")
+        module = f.get("module", "unknown")
+        url = f.get("url", target)
+        title = f.get("title", f"{module} — {sev}")
+        desc = f.get("description", "")
+        evidence = f.get("evidence", {})
+
+        report = {
+            "index": i + 1,
+            "title": title,
+            "severity": sev,
+            "url": url,
+            "module": module,
+            "steps": [
+                f"1. Navigate to {url}",
+                f"2. The {module.replace('_', ' ')} scanner detected a {sev.lower()} severity issue",
+                f"3. {desc}" if desc else f"3. Vulnerability confirmed via automated analysis",
+            ],
+            "impact": f"This {sev.lower()} severity {module.replace('_', ' ')} vulnerability could allow an attacker to compromise the target.",
+            "evidence": evidence,
+            "description": desc,
+        }
+        reports.append(report)
+
+    return {
+        "target": target,
+        "program": program,
+        "generated_at": datetime.now().isoformat(),
+        "total_findings": len(findings),
+        "reports": reports,
+        "summary": {
+            "critical": len([f for f in findings if f.get("severity") == "CRITICAL"]),
+            "high": len([f for f in findings if f.get("severity") == "HIGH"]),
+            "medium": len([f for f in findings if f.get("severity") == "MEDIUM"]),
+            "low": len([f for f in findings if f.get("severity") == "LOW"]),
+            "info": len([f for f in findings if f.get("severity") == "INFO"]),
+        },
+    }
+
+
+@app.get("/api/queue/{item_id}/report")
+async def queue_report(item_id: str, token: str = Depends(check_auth_flexible)):
+    """Get the formatted report for a completed queue item."""
+    item = next((q for q in scan_queue if q["id"] == item_id), None)
+    if not item:
+        return JSONResponse({"error": "Item not found"}, status_code=404)
+    if not item.get("report"):
+        return JSONResponse({"error": "No report available"}, status_code=404)
+    return item["report"]
+
+
 # ── Dashboard HTML ──────────────────────────────────────
 
 HTML_PAGE = r"""<!DOCTYPE html>
@@ -494,6 +739,39 @@ a:hover{text-decoration:underline}
 .program-name{font-weight:600;font-size:0.9rem;flex:1}
 .program-meta{font-size:0.75rem;color:var(--dim)}
 
+/* ── Compliance Badges ── */
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:0.7rem;font-weight:600;padding:3px 8px;border-radius:5px;letter-spacing:.3px}
+.badge.allowed{background:#22d97a20;color:#22d97a}
+.badge.not-allowed{background:#ef444420;color:#ef4444}
+.badge.unknown{background:#f59e0b20;color:#f59e0b}
+.badge.safe{background:#3b82f620;color:#3b82f6}
+
+/* ── Queue ── */
+.queue-item{display:flex;align-items:center;gap:12px;padding:14px;background:var(--bg);border-radius:10px;margin-bottom:8px;border-left:3px solid var(--border);transition:background .15s}
+.queue-item.queued{border-left-color:var(--dim)}
+.queue-item.scanning{border-left-color:var(--accent);animation:pulse 2s infinite}
+.queue-item.complete{border-left-color:var(--accent)}
+.queue-item.error{border-left-color:var(--red)}
+.queue-target{font-weight:700;font-size:0.9rem;font-family:var(--mono)}
+.queue-program{font-size:0.75rem;color:var(--dim)}
+.queue-phases{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+.phase-tag{font-size:0.65rem;padding:2px 6px;border-radius:4px;background:var(--accent-dim);color:var(--accent);font-family:var(--mono)}
+.queue-actions{margin-left:auto;display:flex;gap:6px;flex-shrink:0}
+.btn-sm{padding:5px 10px;border:1px solid var(--border);background:var(--surface2);color:var(--dim);border-radius:6px;cursor:pointer;font-size:0.75rem;transition:all .15s}
+.btn-sm:hover{color:var(--text);border-color:var(--dimmer)}
+.btn-sm.danger:hover{color:var(--red);border-color:var(--red)}
+.btn-sm.accent{background:var(--accent);color:#000;border-color:var(--accent);font-weight:600}
+.btn-sm.accent:hover{opacity:.9}
+
+/* ── Report Modal ── */
+.report-finding{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px}
+.report-finding h4{font-size:0.95rem;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.report-steps{list-style:none;counter-reset:step}
+.report-steps li{counter-increment:step;padding:6px 0;font-size:0.85rem;color:var(--text);position:relative;padding-left:28px}
+.report-steps li::before{content:counter(step);position:absolute;left:0;width:20px;height:20px;border-radius:50%;background:var(--accent-dim);color:var(--accent);font-size:0.7rem;font-weight:700;display:flex;align-items:center;justify-content:center}
+.copy-btn{background:var(--surface2);border:1px solid var(--border);color:var(--dim);padding:4px 10px;border-radius:5px;cursor:pointer;font-size:0.7rem;transition:all .15s}
+.copy-btn:hover{color:var(--accent);border-color:var(--accent)}
+
 /* ── Empty State ── */
 .empty{text-align:center;color:var(--dim);padding:40px 20px;font-size:0.9rem}
 .empty-icon{font-size:2rem;margin-bottom:8px;opacity:.5}
@@ -546,9 +824,10 @@ a:hover{text-decoration:underline}
   <div class="topbar-logo"><div class="dot"></div>BugBountyBot<span style="color:var(--dim);font-weight:400;font-size:.8rem;margin-left:4px">v3</span></div>
   <div class="topbar-nav" id="nav">
     <button class="active" data-tab="overview">Overview</button>
+    <button data-tab="programs">Programs</button>
+    <button data-tab="queue">Queue</button>
     <button data-tab="scanner">Scanner</button>
     <button data-tab="findings">Findings</button>
-    <button data-tab="programs">Programs</button>
   </div>
   <div class="topbar-right">
     <div class="topbar-status"><div class="dot on" id="statusDot"></div><span id="statusText">Online</span></div>
@@ -621,6 +900,9 @@ a:hover{text-decoration:underline}
       <div class="card-header">
         <span class="card-title">Bug Bounty Programs</span>
         <div style="display:flex;gap:8px;align-items:center">
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:var(--dim);cursor:pointer">
+            <input type="checkbox" id="complianceOnly" style="accent-color:var(--accent)"> Scannable only
+          </label>
           <select id="platformFilter" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:8px;font-size:0.8rem;cursor:pointer">
             <option value="all">All Platforms</option>
             <option value="INTIGRITI" selected>Intigriti</option>
@@ -632,6 +914,27 @@ a:hover{text-decoration:underline}
         </div>
       </div>
       <div id="programsList"><div class="empty"><div class="empty-icon">&#x1f3af;</div>Loading programs...</div></div>
+    </div>
+  </div>
+
+  <!-- ── Queue Panel ── -->
+  <div class="panel" id="panel-queue">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Scan Queue</span>
+        <div style="display:flex;gap:8px">
+          <button class="btn-sm accent" id="queueStartBtn" onclick="window._startQueue()">Start Queue</button>
+          <button class="btn-sm" id="queueStopBtn" onclick="window._stopQueue()" style="display:none">Stop</button>
+          <button class="btn-sm" onclick="window._clearQueue()">Clear Done</button>
+        </div>
+      </div>
+      <div id="queueStats" style="display:flex;gap:16px;margin-bottom:12px;font-size:0.8rem;color:var(--dim)">
+        <span>Queued: <strong id="qStat-queued" style="color:var(--text)">0</strong></span>
+        <span>Scanning: <strong id="qStat-scanning" style="color:var(--accent)">0</strong></span>
+        <span>Done: <strong id="qStat-complete" style="color:var(--accent)">0</strong></span>
+        <span>Errors: <strong id="qStat-error" style="color:var(--red)">0</strong></span>
+      </div>
+      <div id="queueList"><div class="empty"><div class="empty-icon">&#x1f4cb;</div>Queue is empty. Add targets from the Programs tab.</div></div>
     </div>
   </div>
 
@@ -715,13 +1018,15 @@ $("nav").addEventListener("click", function(e){
   $("panel-" + btn.dataset.tab).className = "panel active";
   if (btn.dataset.tab === "findings" && allFindings.length === 0) loadAllFindings();
   if (btn.dataset.tab === "programs") loadPrograms();
+  if (btn.dataset.tab === "queue") pollQueue();
 });
 
 /* ── Boot ── */
 function boot() {
-  pollStatus(); pollScans(); loadResults(); loadAllFindings(); loadPrograms();
+  pollStatus(); pollScans(); loadResults(); loadAllFindings(); loadPrograms(); pollQueue();
   setInterval(pollStatus, 5000);
   setInterval(pollScans, 4000);
+  setInterval(pollQueue, 3000);
 }
 
 /* ── Status ── */
@@ -998,49 +1303,84 @@ document.addEventListener("keydown", function(e){ if(e.key==="Escape") window._c
 
 /* ── Programs ── */
 var allPrograms = [];
+var programCompliance = {}; // pid -> compliance data
 
 $("platformFilter").addEventListener("change", function(){ renderPrograms(); });
+$("complianceOnly").addEventListener("change", function(){ renderPrograms(); });
 
 function loadPrograms() {
   var el = $("programsList");
   el.innerHTML = '<div class="empty">Loading programs...</div>';
-  // Sync from Intigriti first, then load from cache
   api("/api/bounty/fetch", {method:"POST"}).then(function(){
     return api("/api/intigriti/programs");
   }).then(function(r){
     var records = r.data.records || r.data.programs || [];
     allPrograms = records;
     renderPrograms();
+    // Pre-fetch compliance for all programs
+    records.forEach(function(p){
+      var pid = p.id || p.intigriti_id || "";
+      if (pid && !programCompliance[pid]) {
+        api("/api/intigriti/programs/" + pid + "/compliance").then(function(cr){
+          if (cr.status === 200) {
+            programCompliance[pid] = cr.data;
+            renderPrograms();
+          }
+        }).catch(function(){});
+      }
+    });
   }).catch(function(e){
     el.innerHTML = '<div class="empty" style="color:var(--red)">Failed to load programs</div>';
   });
 }
 
+function complianceBadge(comp) {
+  if (!comp) return '<span class="badge unknown">? Checking...</span>';
+  var status = comp.automated_tooling_status || "unknown";
+  if (status === "allowed") return '<span class="badge allowed">&#x2713; Automated OK</span>';
+  if (status === "not_allowed") return '<span class="badge not-allowed">&#x2717; No Automated</span>';
+  if (status === "conditional") return '<span class="badge unknown">&#x26a0; Conditional</span>';
+  return '<span class="badge unknown">? Unknown</span>';
+}
+
+function safeHarbourBadge(comp) {
+  if (!comp) return '';
+  if (comp.safe_harbour) return '<span class="badge safe">&#x1f6e1; Safe Harbour</span>';
+  return '';
+}
+
 function renderPrograms() {
   var el = $("programsList");
   var filter = $("platformFilter").value;
+  var onlyScannable = $("complianceOnly").checked;
   var progs = allPrograms;
-  // Filter by platform (for now all loaded are Intigriti, but ready for multi-platform)
   if (filter !== "all") {
     progs = progs.filter(function(p){ return (p.platform || "INTIGRITI").toUpperCase() === filter; });
   }
+  if (onlyScannable) {
+    progs = progs.filter(function(p){
+      var pid = p.id || p.intigriti_id || "";
+      var comp = programCompliance[pid];
+      return comp && comp.automated_tooling_status === "allowed";
+    });
+  }
   $("programsCount").textContent = progs.length + " programs";
-  if (!progs.length) { el.innerHTML = '<div class="empty"><div class="empty-icon">&#x1f3af;</div>No programs found for this platform.</div>'; return; }
+  if (!progs.length) { el.innerHTML = '<div class="empty"><div class="empty-icon">&#x1f3af;</div>No programs found.</div>'; return; }
   el.innerHTML = progs.slice(0,50).map(function(p){
     var name = p.name || p.handle || "Unknown";
-    var status = (p.status && p.status.value) ? p.status.value : (p.status || "");
     var minB = (p.minBounty && p.minBounty.value != null) ? p.minBounty.value : (p.min_bounty || "");
     var maxB = (p.maxBounty && p.maxBounty.value != null) ? p.maxBounty.value : (p.max_bounty || "");
-    var bountyText = (minB || maxB) ? (minB + " - " + maxB + " EUR") : "No bounty info";
-    var following = p.following ? '<span style="color:var(--accent);font-size:0.75rem;margin-left:8px">Following</span>' : '';
-    var confidential = (p.confidentialityLevel && p.confidentialityLevel.value === "confidential") || p.confidentiality === "confidential" ? '<span style="color:var(--orange);font-size:0.75rem;margin-left:8px">Confidential</span>' : '';
-    var domainCount = (p.domains && p.domains.length) ? p.domains.length : (p.scope && p.scope.length ? p.scope.length : "?");
+    var bountyText = (minB || maxB) ? (minB + " - " + maxB + " EUR") : "";
+    var following = p.following ? '<span style="color:var(--accent);font-size:0.7rem;margin-left:6px">&#x2605;</span>' : '';
     var pid = p.id || p.intigriti_id || "";
-    return '<div class="program-card" style="cursor:pointer" onclick="window._viewProgram(\''+esc(pid)+'\')">' +
-      '<div class="program-name">'+esc(name)+following+confidential+'</div>' +
+    var comp = programCompliance[pid];
+    var badges = complianceBadge(comp) + safeHarbourBadge(comp);
+    var domainCount = (p.domains && p.domains.content) ? p.domains.content.length : "?";
+    return '<div class="program-card" onclick="window._viewProgram(\''+esc(pid)+'\')">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="program-name">'+esc(name)+following+'</span>'+badges+'</div>' +
       '<div class="program-meta" style="display:flex;gap:16px;margin-top:4px">' +
         '<span>'+esc(domainCount)+' targets</span>' +
-        '<span style="color:var(--accent)">'+esc(bountyText)+'</span>' +
+        (bountyText ? '<span style="color:var(--accent)">'+esc(bountyText)+'</span>' : '') +
       '</div></div>';
   }).join("");
 }
@@ -1048,50 +1388,256 @@ function renderPrograms() {
 window._viewProgram = function(pid) {
   if (!pid) return;
   var el = $("modalContent");
-  el.innerHTML = '<div class="empty">Loading program details...</div>';
+  el.innerHTML = '<div class="empty">Loading...</div>';
   $("modalOverlay").style.display = "flex";
-  api("/api/intigriti/programs/" + pid).then(function(r){
-    var p = r.data;
-    var html = '<button class="modal-close" onclick="window._closeModal()">x</button>';
-    html += '<h2 style="margin-bottom:16px">'+esc(p.name || p.handle || "Program")+'</h2>';
-    // Scope / Domains
-    var domains = (p.domains && p.domains.content) ? p.domains.content : [];
-    if (domains.length) {
-      html += '<div class="modal-section"><h3>Scope ('+domains.length+' targets)</h3>';
-      domains.forEach(function(d){
-        var tier = (d.tier && d.tier.value) ? d.tier.value : "";
-        html += '<div class="modal-field" style="margin-bottom:4px"><span style="color:var(--accent)">'+esc(d.endpoint || d.asset || "")+'</span>';
-        if (tier) html += ' <span style="color:var(--dim);font-size:0.75rem">['+esc(tier)+']</span>';
-        if (d.description) html += '<br><span style="color:var(--dim);font-size:0.8rem">'+esc(d.description)+'</span>';
-        html += '</div>';
-      });
-      html += '</div>';
-    }
+  // Fetch compliance (includes domains) and program detail in parallel
+  Promise.all([
+    api("/api/intigriti/programs/" + pid + "/compliance"),
+    api("/api/intigriti/programs/" + pid)
+  ]).then(function(results){
+    var comp = results[0].data;
+    var p = results[1].data;
+    programCompliance[pid] = comp;
+    var html = '<button class="modal-close" onclick="window._closeModal()">&#x2715;</button>';
+    html += '<h2 style="margin-bottom:12px">'+esc(p.name || p.handle || "Program")+'</h2>';
+
+    // Compliance section
+    html += '<div class="modal-section"><h3>Compliance</h3><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">';
+    html += complianceBadge(comp) + safeHarbourBadge(comp);
+    html += '</div>';
+    if (comp.user_agent) html += '<div class="modal-field" style="margin-bottom:4px"><span style="color:var(--dim)">Required User-Agent:</span> '+esc(comp.user_agent)+'</div>';
+    if (comp.request_header) html += '<div class="modal-field" style="margin-bottom:4px"><span style="color:var(--dim)">Required Header:</span> '+esc(comp.request_header)+'</div>';
+    if (comp.description) html += '<div class="modal-field" style="font-size:0.8rem;max-height:100px;overflow-y:auto;margin-top:8px">'+esc(comp.description)+'</div>';
+    html += '</div>';
+
     // Bounty
     var minB = (p.minBounty && p.minBounty.value != null) ? p.minBounty.value : "";
     var maxB = (p.maxBounty && p.maxBounty.value != null) ? p.maxBounty.value : "";
     if (minB || maxB) {
       html += '<div class="modal-section"><h3>Bounty Range</h3><div class="modal-field">'+esc(minB)+' - '+esc(maxB)+' EUR</div></div>';
     }
-    // Scan button
-    html += '<div style="margin-top:20px"><button style="background:var(--accent);color:#000;border:none;padding:10px 20px;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.9rem" onclick="window._scanFromProgram(\''+esc(p.id || "")+'\')">Scan This Target</button></div>';
+
+    // Scope with individual "Add to Queue" buttons
+    var domains = comp.domains || [];
+    var canScan = comp.automated_tooling_status === "allowed" || comp.automated_tooling_status === "conditional";
+    if (domains.length) {
+      html += '<div class="modal-section"><h3>Scope ('+domains.length+' targets)</h3>';
+      var urlDomains = domains.filter(function(d){ return d.type === "url" || d.type === "web" || d.type === "api" || d.endpoint; });
+      urlDomains.forEach(function(d, i){
+        html += '<div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;margin-bottom:4px">';
+        html += '<div style="flex:1"><span style="color:var(--accent);font-family:var(--mono);font-size:0.85rem">'+esc(d.endpoint)+'</span>';
+        if (d.tier) html += ' <span style="color:var(--dim);font-size:0.7rem">['+esc(d.tier)+']</span>';
+        if (d.description) html += '<div style="color:var(--dim);font-size:0.75rem;margin-top:2px">'+esc(d.description)+'</div>';
+        html += '</div>';
+        if (canScan) {
+          html += '<button class="btn-sm accent" onclick="window._addToQueue(\''+esc(pid)+'\',\''+esc(d.endpoint)+'\',\''+esc(p.name || p.handle || "")+'\');this.textContent=\'Added\';this.disabled=true">+ Queue</button>';
+        }
+        html += '</div>';
+      });
+      // Add all button
+      if (canScan && urlDomains.length > 1) {
+        html += '<button class="btn-sm accent" style="margin-top:8px;width:100%;padding:10px" onclick="window._addAllToQueue(\''+esc(pid)+'\',\''+esc(p.name || p.handle || "")+'\');this.textContent=\'All Added\';this.disabled=true">+ Add All '+urlDomains.length+' Targets to Queue</button>';
+      }
+      html += '</div>';
+    }
+
+    if (!canScan) {
+      html += '<div style="margin-top:16px;padding:12px;background:var(--red-dim);border-radius:8px;color:var(--red);font-size:0.85rem">&#x26a0; Automated scanning is not allowed on this program.</div>';
+    }
+
     el.innerHTML = html;
   }).catch(function(e){
-    el.innerHTML = '<div class="empty" style="color:var(--red)">Failed to load program details</div>';
+    el.innerHTML = '<div class="empty" style="color:var(--red)">Failed to load details</div>';
+  });
+};
+
+window._addToQueue = function(pid, endpoint, programName) {
+  var comp = programCompliance[pid] || {};
+  api("/api/queue/add", {method:"POST", body:{
+    targets: [endpoint],
+    program_name: programName,
+    program_id: pid,
+    compliance: {user_agent: comp.user_agent, request_header: comp.request_header}
+  }}).then(function(){ pollQueue(); });
+};
+
+window._addAllToQueue = function(pid, programName) {
+  var comp = programCompliance[pid] || {};
+  var domains = comp.domains || [];
+  var urls = domains.filter(function(d){ return d.endpoint; }).map(function(d){ return d.endpoint; });
+  api("/api/queue/add", {method:"POST", body:{
+    targets: urls,
+    program_name: programName,
+    program_id: pid,
+    compliance: {user_agent: comp.user_agent, request_header: comp.request_header}
+  }}).then(function(){ pollQueue(); });
+};
+
+/* ── Queue ── */
+function pollQueue() {
+  api("/api/queue").then(function(r){
+    if (r.status === 401) return;
+    var q = r.data.queue || [];
+    var running = r.data.running;
+    // Stats
+    var stats = {queued:0, scanning:0, complete:0, error:0};
+    q.forEach(function(item){ stats[item.status] = (stats[item.status]||0) + 1; });
+    $("qStat-queued").textContent = stats.queued;
+    $("qStat-scanning").textContent = stats.scanning;
+    $("qStat-complete").textContent = stats.complete;
+    $("qStat-error").textContent = stats.error;
+    // Buttons
+    $("queueStartBtn").style.display = running ? "none" : "";
+    $("queueStopBtn").style.display = running ? "" : "none";
+    // List
+    var el = $("queueList");
+    if (!q.length) { el.innerHTML = '<div class="empty"><div class="empty-icon">&#x1f4cb;</div>Queue is empty. Add targets from Programs tab.</div>'; return; }
+    el.innerHTML = q.map(function(item){
+      var phases = (item.phases || []).map(function(ph){ return '<span class="phase-tag">'+esc(ph.name)+'</span>'; }).join("");
+      var actions = '';
+      if (item.status === "complete" && item.report) {
+        actions += '<button class="btn-sm accent" onclick="window._viewReport(\''+esc(item.id)+'\')">Report</button>';
+      }
+      if (item.status === "queued") {
+        actions += '<button class="btn-sm danger" onclick="window._removeFromQueue(\''+esc(item.id)+'\')">&#x2715;</button>';
+      }
+      var statusBadge = '<span class="scan-badge '+esc(item.status)+'">'+esc(item.status)+'</span>';
+      if (item.status === "complete") statusBadge += ' <span style="font-size:0.75rem;color:var(--accent)">'+item.findings_count+' findings</span>';
+      if (item.status === "error") statusBadge += ' <span style="font-size:0.75rem;color:var(--red)">'+esc(item.error || "")+'</span>';
+      return '<div class="queue-item '+esc(item.status)+'">' +
+        '<div style="flex:1"><div class="queue-target">'+esc(item.target)+'</div>' +
+        '<div class="queue-program">'+esc(item.program_name)+'</div>' +
+        (phases ? '<div class="queue-phases">'+phases+'</div>' : '') +
+        '</div>' +
+        statusBadge +
+        '<div class="queue-actions">'+actions+'</div></div>';
+    }).join("");
+  }).catch(function(){});
+}
+
+window._startQueue = function(){
+  api("/api/queue/start", {method:"POST"}).then(function(){ pollQueue(); });
+};
+window._stopQueue = function(){
+  api("/api/queue/stop", {method:"POST"}).then(function(){ pollQueue(); });
+};
+window._removeFromQueue = function(id){
+  api("/api/queue/" + id, {method:"DELETE"}).then(function(){ pollQueue(); });
+};
+window._clearQueue = function(){
+  api("/api/queue/clear", {method:"POST", body:{type:"finished"}}).then(function(){ pollQueue(); });
+};
+
+/* ── Reports ── */
+window._viewReport = function(itemId) {
+  var el = $("modalContent");
+  el.innerHTML = '<div class="empty">Loading report...</div>';
+  $("modalOverlay").style.display = "flex";
+  api("/api/queue/" + itemId + "/report").then(function(r){
+    var rpt = r.data;
+    var html = '<button class="modal-close" onclick="window._closeModal()">&#x2715;</button>';
+    html += '<h2 style="margin-bottom:4px">Scan Report: '+esc(rpt.target)+'</h2>';
+    html += '<div style="color:var(--dim);font-size:0.8rem;margin-bottom:16px">'+esc(rpt.program)+' &middot; '+esc(rpt.generated_at)+'</div>';
+
+    // Summary badges
+    var sum = rpt.summary || {};
+    html += '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">';
+    if (sum.critical) html += '<span class="sev-tag CRITICAL">CRITICAL '+sum.critical+'</span>';
+    if (sum.high) html += '<span class="sev-tag HIGH">HIGH '+sum.high+'</span>';
+    if (sum.medium) html += '<span class="sev-tag MEDIUM">MEDIUM '+sum.medium+'</span>';
+    if (sum.low) html += '<span class="sev-tag LOW">LOW '+sum.low+'</span>';
+    if (sum.info) html += '<span class="sev-tag INFO">INFO '+sum.info+'</span>';
+    html += '</div>';
+
+    // Copy all button
+    html += '<button class="copy-btn" style="margin-bottom:16px" onclick="window._copyFullReport(\''+esc(itemId)+'\')">Copy Full Report</button>';
+
+    // Individual findings
+    (rpt.reports || []).forEach(function(f, i){
+      html += '<div class="report-finding">';
+      html += '<h4><span class="sev-tag '+esc(f.severity)+'">'+esc(f.severity)+'</span> '+esc(f.title)+'</h4>';
+      html += '<div style="color:var(--dim);font-size:0.8rem;margin-bottom:8px">'+esc(f.module)+' &middot; '+esc(f.url)+'</div>';
+
+      if (f.description) html += '<div style="margin-bottom:8px;font-size:0.85rem">'+esc(f.description)+'</div>';
+
+      html += '<h4 style="font-size:0.75rem;color:var(--dim);margin-top:12px">Steps to Reproduce</h4>';
+      html += '<ol class="report-steps">';
+      (f.steps || []).forEach(function(s){ html += '<li>'+esc(s)+'</li>'; });
+      html += '</ol>';
+
+      html += '<h4 style="font-size:0.75rem;color:var(--dim);margin-top:12px">Impact</h4>';
+      html += '<div style="font-size:0.85rem;padding:8px;background:var(--bg);border-radius:6px">'+esc(f.impact)+'</div>';
+
+      if (f.evidence && Object.keys(f.evidence).length) {
+        html += '<h4 style="font-size:0.75rem;color:var(--dim);margin-top:12px">Evidence</h4>';
+        html += '<div class="modal-field">'+esc(JSON.stringify(f.evidence, null, 2))+'</div>';
+      }
+
+      html += '<button class="copy-btn" style="margin-top:8px" onclick="window._copySingleReport('+i+',\''+esc(itemId)+'\')">Copy This Finding</button>';
+      html += '</div>';
+    });
+
+    if (!rpt.reports || !rpt.reports.length) {
+      html += '<div class="empty">No findings to report.</div>';
+    }
+
+    el.innerHTML = html;
+  }).catch(function(e){
+    el.innerHTML = '<div class="empty" style="color:var(--red)">Failed to load report</div>';
+  });
+};
+
+window._copyFullReport = function(itemId) {
+  api("/api/queue/" + itemId + "/report").then(function(r){
+    var rpt = r.data;
+    var text = "# Scan Report: " + rpt.target + "\n";
+    text += "Program: " + rpt.program + "\n";
+    text += "Date: " + rpt.generated_at + "\n\n";
+    (rpt.reports || []).forEach(function(f, i){
+      text += "## Finding " + (i+1) + ": " + f.title + "\n";
+      text += "Severity: " + f.severity + "\n";
+      text += "URL: " + f.url + "\n\n";
+      text += "### Steps to Reproduce\n";
+      (f.steps || []).forEach(function(s){ text += s + "\n"; });
+      text += "\n### Impact\n" + f.impact + "\n\n";
+      if (f.evidence && Object.keys(f.evidence).length) {
+        text += "### Evidence\n" + JSON.stringify(f.evidence, null, 2) + "\n\n";
+      }
+      text += "---\n\n";
+    });
+    navigator.clipboard.writeText(text).then(function(){
+      alert("Report copied to clipboard!");
+    });
+  });
+};
+
+window._copySingleReport = function(idx, itemId) {
+  api("/api/queue/" + itemId + "/report").then(function(r){
+    var f = (r.data.reports || [])[idx];
+    if (!f) return;
+    var text = "## " + f.title + "\n";
+    text += "Severity: " + f.severity + "\n";
+    text += "URL: " + f.url + "\n\n";
+    text += "### Steps to Reproduce\n";
+    (f.steps || []).forEach(function(s){ text += s + "\n"; });
+    text += "\n### Impact\n" + f.impact + "\n";
+    if (f.evidence && Object.keys(f.evidence).length) {
+      text += "\n### Evidence\n" + JSON.stringify(f.evidence, null, 2) + "\n";
+    }
+    navigator.clipboard.writeText(text).then(function(){
+      alert("Finding copied to clipboard!");
+    });
   });
 };
 
 window._scanFromProgram = function(pid) {
-  // Find first domain from program and launch scan
   var prog = allPrograms.find(function(p){ return (p.id || p.intigriti_id) === pid; });
   if (!prog) return;
   window._closeModal();
-  // Switch to scans tab
   $("nav").querySelectorAll("button").forEach(function(b){ b.className=""; });
-  $("nav").querySelector("[data-tab=scans]").className = "active";
+  $("nav").querySelector("[data-tab=scanner]").className = "active";
   document.querySelectorAll(".panel").forEach(function(p){ p.className="panel"; });
-  $("panel-scans").className = "panel active";
-  // Use first scope domain
+  $("panel-scanner").className = "panel active";
   var domains = (prog.domains && prog.domains.content) ? prog.domains.content : (prog.scope || []);
   if (domains.length) {
     var target = domains[0].endpoint || domains[0].asset || "";

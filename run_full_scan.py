@@ -13,6 +13,7 @@ async def run_full_scan(
     domain: str,
     output_dir: str = "./results",
     phase_callback=None,
+    auth_headers: dict = None,
 ):
     """
     Run a full scan against a domain and return structured results.
@@ -48,7 +49,7 @@ async def run_full_scan(
 
         raw_findings = await run_scan(
             target_url=target_url,
-            auth_headers=None,
+            auth_headers=auth_headers,
             config={
                 "scanner": {
                     "concurrency": 3,

@@ -105,12 +105,46 @@ class IntigritiClient:
             f"/programs/{program_id}/rules-of-engagements/{version_id}"
         )
 
+    def extract_compliance(self, program_detail: dict) -> dict:
+        """Extract compliance/rules of engagement info from program detail."""
+        roe = program_detail.get("rulesOfEngagement") or {}
+        # ROE uses version wrapper: {id, createdAt, content: {...}}
+        content = roe.get("content") if isinstance(roe, dict) else {}
+        if content is None:
+            content = {}
+
+        testing = {}
+        if isinstance(content, dict):
+            testing = content.get("testingRequirements") or {}
+
+        automated = testing.get("automatedTooling")
+        # automatedTooling enum: null=unspecified, 1=allowed, 0=not allowed
+        if automated is None:
+            tooling_status = "unknown"
+        elif automated == 1:
+            tooling_status = "allowed"
+        elif automated == 0:
+            tooling_status = "not_allowed"
+        else:
+            tooling_status = "conditional"
+
+        return {
+            "automated_tooling": automated,
+            "automated_tooling_status": tooling_status,
+            "safe_harbour": content.get("safeHarbour", False) if isinstance(content, dict) else False,
+            "user_agent": testing.get("userAgent"),
+            "request_header": testing.get("requestHeader"),
+            "description": content.get("description", "") if isinstance(content, dict) else "",
+            "intigriti_me": testing.get("intigritiMe", False),
+        }
+
     def normalize_program(self, raw: dict) -> dict:
         """Convert Intigriti API program to our DB schema format."""
         domains = []
         if "domains" in raw and "content" in raw.get("domains", {}):
             for d in raw["domains"]["content"]:
                 domains.append({
+                    "id": d.get("id", ""),
                     "type": d.get("type", {}).get("value", "url"),
                     "asset": d.get("endpoint", ""),
                     "tier": d.get("tier", {}).get("value", ""),
@@ -119,6 +153,9 @@ class IntigritiClient:
 
         min_bounty = raw.get("minBounty", {})
         max_bounty = raw.get("maxBounty", {})
+
+        # Extract compliance if rulesOfEngagement is present (detail endpoint)
+        compliance = self.extract_compliance(raw) if raw.get("rulesOfEngagement") else None
 
         return {
             "platform": "INTIGRITI",
@@ -135,6 +172,7 @@ class IntigritiClient:
             "confidentiality": raw.get("confidentialityLevel", {}).get("value", ""),
             "following": raw.get("following", False),
             "industry": raw.get("industry", ""),
+            "compliance": compliance,
         }
 
     async def fetch_all_programs_normalized(self) -> list[dict]:
