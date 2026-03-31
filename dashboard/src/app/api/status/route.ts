@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 
+const scanServiceUrl = process.env.SCAN_SERVICE_URL || "http://localhost:8000";
+
 export async function GET() {
   try {
-    const botUrl = process.env.BOT_API_URL || "http://localhost:8080";
-    const token = process.env.DASHBOARD_TOKEN || "";
-    const res = await fetch(`${botUrl}/api/status?token=${encodeURIComponent(token)}`, {
+    const res = await fetch(`${scanServiceUrl}/api/status`, {
       cache: "no-store",
       signal: AbortSignal.timeout(5000),
     });

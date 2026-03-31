@@ -6,18 +6,10 @@ aiohttp==3.9.*
 beautifulsoup4==4.12.*
 lxml==5.1.*
 
-# AI Agent
-anthropic==0.49.*
-openai==1.60.*
-
 # Data & Config
 pyyaml==6.0.*
 pydantic==2.10.*
 pydantic-settings==2.7.*
-
-# Database (findings storage)
-sqlalchemy==2.0.*
-aiosqlite==0.20.*
 
 # Rate limiting
 aiolimiter==1.1.*

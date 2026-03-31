@@ -17,34 +17,52 @@ import {
   Clock,
   Activity,
   Wallet,
-  ChevronDown,
   ChevronRight,
   Star,
   Lock,
   AlertTriangle,
+  Zap,
+  ShieldCheck,
+  ShieldX,
+  ShieldQuestion,
 } from "lucide-react";
 
 // ── Types ──
 
 interface ScopeItem {
+  id?: string;
   type?: string;
+  endpoint?: string;
   asset?: string;
-  url?: string;
   tier?: string;
   description?: string;
-  [key: string]: unknown;
 }
 
-interface Program {
+interface Compliance {
+  automatedTooling?: number | boolean | null;
+  automatedToolingStatus?: string;
+  safeHarbour?: boolean;
+  userAgent?: string | null;
+  requestHeader?: string | null;
+  description?: string;
+  intigritiMe?: boolean;
+}
+
+interface DBProgram {
   id: string;
   platform: string;
   name: string;
   slug: string;
   url: string;
-  scope: (string | ScopeItem)[];
+  intigritiId: string | null;
+  scope: ScopeItem[];
+  compliance: Compliance;
   maxBounty: number | null;
   minBounty: number | null;
-  managed: boolean;
+  currency: string;
+  industry: string | null;
+  programType: string | null;
+  confidentiality: string | null;
   active: boolean;
   syncedAt: string;
 }
@@ -103,13 +121,6 @@ interface IntigritiPayout {
 
 // ── Constants ──
 
-const PLATFORM_COLORS: Record<string, { bg: string; text: string; border: string }> = {
-  INTIGRITI: { bg: "bg-blue-500/15", text: "text-blue-400", border: "border-blue-500/30" },
-  HACKERONE: { bg: "bg-purple-500/15", text: "text-purple-400", border: "border-purple-500/30" },
-  YESWEHACK: { bg: "bg-orange-500/15", text: "text-orange-400", border: "border-orange-500/30" },
-  MANUAL: { bg: "bg-gray-500/15", text: "text-gray-400", border: "border-gray-500/30" },
-};
-
 const TIER_COLORS: Record<string, string> = {
   tier1: "text-[var(--red)]",
   tier2: "text-[var(--orange)]",
@@ -119,6 +130,7 @@ const TIER_COLORS: Record<string, string> = {
 
 const TAB_LIST = [
   { id: "programs", label: "Programs", icon: Globe },
+  { id: "live", label: "Live (Intigriti)", icon: Zap },
   { id: "activities", label: "Activities", icon: Activity },
   { id: "payouts", label: "Payouts", icon: Wallet },
 ] as const;
@@ -130,17 +142,21 @@ type TabId = (typeof TAB_LIST)[number]["id"];
 export default function ProgramsPage() {
   const [activeTab, setActiveTab] = useState<TabId>("programs");
   const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<string | null>(null);
 
   async function syncIntigriti() {
     setSyncing(true);
+    setSyncResult(null);
     try {
-      await fetch("/api/programs/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platform: "INTIGRITI" }),
-      });
+      const res = await fetch("/api/programs/sync", { method: "POST" });
+      const data = await res.json();
+      if (data.ok) {
+        setSyncResult(`Synced ${data.synced} programs (${data.compliant} compliant)`);
+      } else {
+        setSyncResult(`Error: ${data.error}`);
+      }
     } catch {
-      // silent
+      setSyncResult("Sync failed");
     } finally {
       setSyncing(false);
     }
@@ -149,7 +165,7 @@ export default function ProgramsPage() {
   return (
     <div className="space-y-4">
       {/* Tab bar + sync */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-1">
           {TAB_LIST.map((tab) => {
             const Icon = tab.icon;
@@ -171,57 +187,359 @@ export default function ProgramsPage() {
           })}
         </div>
 
-        <button
-          onClick={syncIntigriti}
-          disabled={syncing}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--accent)] text-black text-xs font-bold hover:opacity-90 disabled:opacity-40"
-        >
-          {syncing ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="w-3.5 h-3.5" />
+        <div className="flex items-center gap-2">
+          {syncResult && (
+            <span className="text-[10px] text-[var(--dim)]">{syncResult}</span>
           )}
-          Sync Intigriti
-        </button>
+          <button
+            onClick={syncIntigriti}
+            disabled={syncing}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--accent)] text-black text-xs font-bold hover:opacity-90 disabled:opacity-40"
+          >
+            {syncing ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="w-3.5 h-3.5" />
+            )}
+            Sync Intigriti
+          </button>
+        </div>
       </div>
 
-      {activeTab === "programs" && <ProgramsTab />}
+      {activeTab === "programs" && <DBProgramsTab />}
+      {activeTab === "live" && <LiveProgramsTab />}
       {activeTab === "activities" && <ActivitiesTab />}
       {activeTab === "payouts" && <PayoutsTab />}
     </div>
   );
 }
 
-// ── Programs Tab ──
+// ── DB Programs Tab (synced, with compliance) ──
 
-function ProgramsTab() {
-  const [programs, setPrograms] = useState<IntigritiProgram[]>([]);
+function DBProgramsTab() {
+  const [programs, setPrograms] = useState<DBProgram[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [typeFilter, setTypeFilter] = useState("");
-  const [followingFilter, setFollowingFilter] = useState(false);
-  const [selectedProgram, setSelectedProgram] = useState<IntigritiProgram | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [addingToTargets, setAddingToTargets] = useState<string | null>(null);
-  const [addedTargets, setAddedTargets] = useState<Set<string>>(new Set());
+  const [complianceFilter, setComplianceFilter] = useState(true); // default: show compliant only
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [scanning, setScanning] = useState<string | null>(null);
+  const [scannedIds, setScannedIds] = useState<Set<string>>(new Set());
 
   const fetchPrograms = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ limit: "200", offset: "0" });
-      if (followingFilter) params.set("following", "true");
-      const res = await fetch(`/api/intigriti/programs?${params}`);
+      const params = new URLSearchParams({ limit: "200" });
+      if (complianceFilter) params.set("compliant", "true");
+      if (search) params.set("search", search);
+      const res = await fetch(`/api/programs?${params}`);
       if (res.ok) {
         const data = await res.json();
-        setPrograms(data.records || []);
+        setPrograms(data.programs || []);
       }
     } catch {
       // silent
     } finally {
       setLoading(false);
     }
-  }, [followingFilter]);
+  }, [complianceFilter, search]);
+
+  useEffect(() => {
+    fetchPrograms();
+  }, [fetchPrograms]);
+
+  async function launchScan(program: DBProgram) {
+    setScanning(program.id);
+    try {
+      const scope = program.scope || [];
+      const firstDomain = scope[0]?.endpoint || scope[0]?.asset || program.slug;
+      const domain = (firstDomain || "").replace(/^\*\./, "");
+
+      await fetch("/api/scans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          domain,
+          programId: program.id,
+          depth: "standard",
+          modules: ["idor", "access_control", "info_disclosure"],
+          rateLimit: 30,
+        }),
+      });
+      setScannedIds((prev) => new Set([...prev, program.id]));
+    } catch {
+      // silent
+    } finally {
+      setScanning(null);
+    }
+  }
+
+  const compliantCount = programs.length;
+  const totalBounty = programs.reduce((s, p) => s + (p.maxBounty || 0), 0);
+
+  return (
+    <>
+      {/* Filters */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--dim)]" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search programs..."
+              className="w-full pl-10 pr-4 py-2.5 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm focus:outline-none focus:border-[var(--accent)] transition-colors"
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setComplianceFilter(!complianceFilter)}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+              complianceFilter
+                ? "bg-[var(--accent-dim)] text-[var(--accent)] border border-[var(--accent)]/30"
+                : "bg-[var(--bg)] text-[var(--dim)] border border-[var(--border)]"
+            }`}
+          >
+            <ShieldCheck className="w-3 h-3" />
+            Automated Tooling Allowed
+          </button>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
+        <StatBox icon={ShieldCheck} label="Compliant" value={compliantCount} color="accent" />
+        <StatBox icon={DollarSign} label="Max Bounty Pool" value={`€${Math.round(totalBounty).toLocaleString()}`} color="accent" />
+        <StatBox icon={Filter} label="Showing" value={programs.length} color="dim" />
+      </div>
+
+      {/* Programs list */}
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" />
+        </div>
+      ) : programs.length === 0 ? (
+        <EmptyState message="No programs found" sub="Sync Intigriti to fetch programs, or adjust filters" />
+      ) : (
+        <div className="space-y-3">
+          {programs.map((program) => (
+            <DBProgramCard
+              key={program.id}
+              program={program}
+              isExpanded={expandedId === program.id}
+              onToggle={() => setExpandedId(expandedId === program.id ? null : program.id)}
+              onScan={() => launchScan(program)}
+              isScanning={scanning === program.id}
+              isScanned={scannedIds.has(program.id)}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── DB Program Card ──
+
+function DBProgramCard({
+  program,
+  isExpanded,
+  onToggle,
+  onScan,
+  isScanning,
+  isScanned,
+}: {
+  program: DBProgram;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onScan: () => void;
+  isScanning: boolean;
+  isScanned: boolean;
+}) {
+  const compliance = program.compliance || {};
+  const toolingStatus = compliance.automatedToolingStatus || "unknown";
+  const scope = program.scope || [];
+
+  const ToolingIcon = toolingStatus === "allowed" ? ShieldCheck : toolingStatus === "not_allowed" ? ShieldX : ShieldQuestion;
+  const toolingColor = toolingStatus === "allowed" ? "text-[var(--accent)]" : toolingStatus === "not_allowed" ? "text-[var(--red)]" : "text-[var(--orange)]";
+  const toolingLabel = toolingStatus === "allowed" ? "Automated OK" : toolingStatus === "not_allowed" ? "No Automated" : "Unknown";
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden hover:border-[var(--accent)]/30 transition-colors">
+      {/* Header */}
+      <div className="p-4 flex items-start gap-3">
+        <div className="w-10 h-10 rounded-lg bg-blue-500/15 flex items-center justify-center flex-shrink-0">
+          <Shield className="w-5 h-5 text-blue-400" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-sm font-semibold truncate">{program.name}</h3>
+            {program.confidentiality === "application_only" && (
+              <Lock className="w-3 h-3 text-[var(--orange)]" />
+            )}
+          </div>
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+            <span className="text-[10px] uppercase font-bold text-blue-400">INTIGRITI</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+              program.active ? "bg-[var(--accent-dim)] text-[var(--accent)]" : "bg-[var(--red)]/15 text-[var(--red)]"
+            }`}>
+              {program.active ? "open" : "closed"}
+            </span>
+            {program.industry && <span className="text-[10px] text-[var(--dim)]">· {program.industry}</span>}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold flex items-center gap-1 ${
+              toolingStatus === "allowed" ? "bg-[var(--accent-dim)] text-[var(--accent)]" : "bg-[var(--red)]/15 text-[var(--red)]"
+            }`}>
+              <ToolingIcon className="w-3 h-3" />
+              {toolingLabel}
+            </span>
+          </div>
+          {/* Bounty */}
+          {(program.minBounty || program.maxBounty) && (
+            <div className="flex items-center gap-1 mt-2 text-xs text-[var(--accent)]">
+              <DollarSign className="w-3 h-3" />
+              {program.minBounty && `${program.currency} ${program.minBounty.toLocaleString()}`}
+              {program.minBounty && program.maxBounty && " — "}
+              {program.maxBounty && `${program.currency} ${program.maxBounty.toLocaleString()}`}
+            </div>
+          )}
+          <p className="text-[10px] text-[var(--dim)] mt-1">
+            {scope.length} domain{scope.length > 1 ? "s" : ""} in scope
+          </p>
+        </div>
+
+        {/* Actions */}
+        <div className="flex flex-col gap-1 shrink-0">
+          <button
+            onClick={onToggle}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] bg-[var(--surface2)] text-[var(--dim)] hover:text-[var(--text)] transition-colors whitespace-nowrap font-bold"
+          >
+            <Eye className="w-3 h-3" />
+            {isExpanded ? "Hide" : "Scope"}
+          </button>
+          <button
+            onClick={onScan}
+            disabled={isScanning || isScanned || !program.active || toolingStatus !== "allowed"}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all whitespace-nowrap ${
+              isScanned
+                ? "bg-[var(--accent-dim)] text-[var(--accent)]"
+                : toolingStatus !== "allowed"
+                  ? "bg-[var(--surface2)] text-[var(--dim)] opacity-40 cursor-not-allowed"
+                  : "bg-[var(--surface2)] text-[var(--dim)] hover:text-[var(--accent)] hover:bg-[var(--accent-dim)]"
+            } disabled:opacity-40`}
+          >
+            {isScanning ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : isScanned ? (
+              <CheckCircle2 className="w-3 h-3" />
+            ) : (
+              <Crosshair className="w-3 h-3" />
+            )}
+            {isScanned ? "Queued" : "Scan"}
+          </button>
+          {program.url && (
+            <a
+              href={program.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] bg-[var(--surface2)] text-[var(--dim)] hover:text-[var(--text)] transition-colors whitespace-nowrap"
+            >
+              <ExternalLink className="w-3 h-3" />
+              Intigriti
+            </a>
+          )}
+        </div>
+      </div>
+
+      {/* Expanded: Scope + Compliance */}
+      {isExpanded && (
+        <div className="border-t border-[var(--border)] p-4 space-y-3">
+          {/* Compliance details */}
+          <div className="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3 space-y-2">
+            <h4 className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold">Rules of Engagement</h4>
+            <div className="flex flex-wrap gap-3 text-xs">
+              <div className="flex items-center gap-1.5">
+                <ToolingIcon className={`w-3.5 h-3.5 ${toolingColor}`} />
+                <span>Automated Tooling: <strong>{toolingLabel}</strong></span>
+              </div>
+              {compliance.safeHarbour !== undefined && (
+                <div className="flex items-center gap-1.5">
+                  <Shield className={`w-3.5 h-3.5 ${compliance.safeHarbour ? "text-[var(--accent)]" : "text-[var(--red)]"}`} />
+                  <span>Safe Harbour: <strong>{compliance.safeHarbour ? "Yes" : "No"}</strong></span>
+                </div>
+              )}
+            </div>
+            {compliance.userAgent && (
+              <div className="text-xs">
+                <span className="text-[var(--dim)]">Required User-Agent: </span>
+                <code className="text-[var(--blue)] font-mono text-[11px]">{compliance.userAgent}</code>
+              </div>
+            )}
+            {compliance.requestHeader && (
+              <div className="text-xs">
+                <span className="text-[var(--dim)]">Required Header: </span>
+                <code className="text-[var(--blue)] font-mono text-[11px]">{compliance.requestHeader}</code>
+              </div>
+            )}
+            {compliance.description && (
+              <p className="text-xs text-[var(--dim)] mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap">
+                {compliance.description}
+              </p>
+            )}
+          </div>
+
+          {/* Scope domains */}
+          <div>
+            <h4 className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold mb-2">
+              Scope ({scope.length} domains)
+            </h4>
+            {scope.length > 0 ? (
+              <div className="space-y-1.5">
+                {scope.map((d, i) => (
+                  <div key={i} className="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-2.5 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <code className="text-sm font-mono text-[var(--text)]">{d.endpoint || d.asset}</code>
+                      <span className={`text-[9px] uppercase font-bold ${TIER_COLORS[d.tier || ""] || "text-[var(--dim)]"}`}>
+                        {d.tier || "no tier"}
+                      </span>
+                    </div>
+                    <span className="text-[10px] uppercase text-[var(--dim)] font-medium">{d.type}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-[var(--dim)]">No scope data — try re-syncing</p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Live Programs Tab (direct from Intigriti API) ──
+
+function LiveProgramsTab() {
+  const [programs, setPrograms] = useState<IntigritiProgram[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [selectedProgram, setSelectedProgram] = useState<IntigritiProgram | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const fetchPrograms = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/intigriti/programs?limit=200");
+      if (res.ok) {
+        const data = await res.json();
+        setPrograms(data.programs || data.records || []);
+      }
+    } catch {
+      // silent
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     fetchPrograms();
@@ -242,127 +560,65 @@ function ProgramsTab() {
     }
   }
 
-  async function launchScan(program: IntigritiProgram) {
-    setAddingToTargets(program.id);
-    try {
-      const domain = program.domains?.content?.[0]?.endpoint || program.handle;
-      await fetch("/api/scans", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          domain: domain.replace(/^\*\./, ""),
-          depth: "standard",
-          modules: ["recon", "xss", "sqli", "ssrf", "lfi", "open_redirect", "cors", "exposed_files"],
-          rateLimit: 30,
-        }),
-      });
-      setAddedTargets((prev) => new Set([...prev, program.id]));
-    } catch {
-      // silent
-    } finally {
-      setAddingToTargets(null);
-    }
-  }
-
   const filtered = programs.filter((p) => {
     if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !p.handle.toLowerCase().includes(search.toLowerCase())) return false;
-    if (statusFilter && p.status?.value !== statusFilter) return false;
-    if (typeFilter && p.type?.value !== typeFilter) return false;
     return true;
   });
 
-  const statuses = [...new Set(programs.map((p) => p.status?.value).filter(Boolean))];
-  const types = [...new Set(programs.map((p) => p.type?.value).filter(Boolean))];
-  const totalMaxBounty = programs.reduce((s, p) => s + (p.maxBounty?.value || 0), 0);
-  const followedCount = programs.filter((p) => p.following).length;
-
   return (
     <>
-      {/* Filters */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 space-y-3">
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--dim)]" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search programs..."
-              className="w-full pl-10 pr-4 py-2.5 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm focus:outline-none focus:border-[var(--accent)] transition-colors"
-            />
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-3 py-2 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-xs"
-          >
-            <option value="">All Status</option>
-            {statuses.map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="px-3 py-2 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-xs"
-          >
-            <option value="">All Types</option>
-            {types.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
-          <button
-            onClick={() => setFollowingFilter(!followingFilter)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
-              followingFilter
-                ? "bg-[var(--accent-dim)] text-[var(--accent)] border border-[var(--accent)]/30"
-                : "bg-[var(--bg)] text-[var(--dim)] border border-[var(--border)]"
-            }`}
-          >
-            <Star className="w-3 h-3" />
-            Following
-          </button>
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--dim)]" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search live programs..."
+            className="w-full pl-10 pr-4 py-2.5 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm focus:outline-none focus:border-[var(--accent)] transition-colors"
+          />
         </div>
       </div>
 
-      {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
-        <StatBox icon={Globe} label="Total" value={programs.length} color="accent" />
-        <StatBox icon={Star} label="Following" value={followedCount} color="blue" />
-        <StatBox
-          icon={DollarSign}
-          label="Max Bounty Pool"
-          value={`€${Math.round(totalMaxBounty).toLocaleString()}`}
-          color="accent"
-        />
-        <StatBox icon={Filter} label="Showing" value={filtered.length} color="dim" />
-      </div>
+      <StatBox icon={Globe} label="Live from Intigriti" value={filtered.length} color="blue" />
 
-      {/* Programs grid */}
       {loading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" />
         </div>
       ) : filtered.length === 0 ? (
-        <EmptyState message="No programs found" sub="Sync Intigriti to fetch programs" />
+        <EmptyState message="No programs found" sub="Check your Intigriti API token" />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {filtered.map((program) => (
-            <ProgramCard
+            <div
               key={program.id}
-              program={program}
-              onOpenDetail={() => openDetail(program.id)}
-              onLaunchScan={() => launchScan(program)}
-              isAdding={addingToTargets === program.id}
-              isAdded={addedTargets.has(program.id)}
-            />
+              className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent)]/30 transition-colors cursor-pointer"
+              onClick={() => openDetail(program.id)}
+            >
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold truncate">{program.name}</h3>
+                {program.following && <Star className="w-3 h-3 text-[var(--accent)] fill-[var(--accent)]" />}
+              </div>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-[10px] uppercase font-bold text-blue-400">INTIGRITI</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                  program.status?.value === "open" ? "bg-[var(--accent-dim)] text-[var(--accent)]" : "bg-[var(--red)]/15 text-[var(--red)]"
+                }`}>
+                  {program.status?.value}
+                </span>
+              </div>
+              {program.maxBounty && (
+                <div className="flex items-center gap-1 mt-2 text-xs text-[var(--accent)]">
+                  <DollarSign className="w-3 h-3" />
+                  {program.maxBounty.currency} {program.maxBounty.value.toLocaleString()}
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}
 
-      {/* Detail modal */}
       {(selectedProgram || detailLoading) && (
         <ProgramDetailModal
           program={selectedProgram}
@@ -371,117 +627,6 @@ function ProgramsTab() {
         />
       )}
     </>
-  );
-}
-
-// ── Program Card ──
-
-function ProgramCard({
-  program,
-  onOpenDetail,
-  onLaunchScan,
-  isAdding,
-  isAdded,
-}: {
-  program: IntigritiProgram;
-  onOpenDetail: () => void;
-  onLaunchScan: () => void;
-  isAdding: boolean;
-  isAdded: boolean;
-}) {
-  const isOpen = program.status?.value === "open";
-  const isConfidential = program.confidentialityLevel?.value === "application_only";
-  const domainCount = program.domains?.content?.length || 0;
-
-  return (
-    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent)]/30 transition-colors group">
-      <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-lg bg-blue-500/15 flex items-center justify-center flex-shrink-0">
-          <Shield className="w-5 h-5 text-blue-400" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold truncate">{program.name}</h3>
-            {program.following && (
-              <Star className="w-3 h-3 text-[var(--accent)] fill-[var(--accent)]" />
-            )}
-            {isConfidential && (
-              <Lock className="w-3 h-3 text-[var(--orange)]" />
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[10px] uppercase font-bold text-blue-400">INTIGRITI</span>
-            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
-              isOpen ? "bg-[var(--accent-dim)] text-[var(--accent)]" : "bg-[var(--red)]/15 text-[var(--red)]"
-            }`}>
-              {program.status?.value || "unknown"}
-            </span>
-            {program.type?.value && (
-              <span className="text-[10px] text-[var(--dim)]">{program.type.value}</span>
-            )}
-            {program.industry && (
-              <span className="text-[10px] text-[var(--dim)]">· {program.industry}</span>
-            )}
-          </div>
-
-          {/* Bounty range */}
-          {(program.minBounty || program.maxBounty) && (
-            <div className="flex items-center gap-1 mt-2 text-xs text-[var(--accent)]">
-              <DollarSign className="w-3 h-3" />
-              {program.minBounty && `${program.minBounty.currency} ${program.minBounty.value.toLocaleString()}`}
-              {program.minBounty && program.maxBounty && " — "}
-              {program.maxBounty && `${program.maxBounty.currency} ${program.maxBounty.value.toLocaleString()}`}
-            </div>
-          )}
-
-          {/* Domain count hint */}
-          {domainCount > 0 && (
-            <p className="text-[10px] text-[var(--dim)] mt-1.5">
-              {domainCount} domain{domainCount > 1 ? "s" : ""} in scope
-            </p>
-          )}
-        </div>
-
-        {/* Actions */}
-        <div className="flex flex-col gap-1 shrink-0">
-          <button
-            onClick={onOpenDetail}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] bg-[var(--surface2)] text-[var(--dim)] hover:text-[var(--text)] transition-colors whitespace-nowrap font-bold"
-          >
-            <Eye className="w-3 h-3" />
-            Details
-          </button>
-          <button
-            onClick={onLaunchScan}
-            disabled={isAdding || isAdded || !isOpen}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all whitespace-nowrap ${
-              isAdded
-                ? "bg-[var(--accent-dim)] text-[var(--accent)]"
-                : "bg-[var(--surface2)] text-[var(--dim)] hover:text-[var(--accent)] hover:bg-[var(--accent-dim)]"
-            } disabled:opacity-40`}
-          >
-            {isAdding ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : isAdded ? (
-              <CheckCircle2 className="w-3 h-3" />
-            ) : (
-              <Crosshair className="w-3 h-3" />
-            )}
-            {isAdded ? "Queued" : "Scan"}
-          </button>
-          <a
-            href={program.webLinks?.detail || "#"}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] bg-[var(--surface2)] text-[var(--dim)] hover:text-[var(--text)] transition-colors whitespace-nowrap"
-          >
-            <ExternalLink className="w-3 h-3" />
-            Intigriti
-          </a>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -513,7 +658,6 @@ function ProgramDetailModal({
 
   return (
     <ModalWrapper onClose={onClose}>
-      {/* Header */}
       <div className="flex items-start justify-between mb-4">
         <div>
           <h2 className="text-lg font-bold flex items-center gap-2">
@@ -527,8 +671,6 @@ function ProgramDetailModal({
             }`}>
               {program.status?.value}
             </span>
-            <span className="text-[10px] text-[var(--dim)]">{program.type?.value}</span>
-            {program.industry && <span className="text-[10px] text-[var(--dim)]">· {program.industry}</span>}
           </div>
         </div>
         <button onClick={onClose} className="p-1 hover:bg-[var(--surface2)] rounded-lg transition-colors">
@@ -536,7 +678,6 @@ function ProgramDetailModal({
         </button>
       </div>
 
-      {/* Bounty */}
       {(program.minBounty || program.maxBounty) && (
         <div className="bg-[var(--accent-dim)] border border-[var(--accent)]/20 rounded-lg p-3 mb-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--accent)]">
@@ -551,7 +692,7 @@ function ProgramDetailModal({
         </div>
       )}
 
-      {/* Scope / Domains */}
+      {/* Scope */}
       <SectionHeader title="Scope" count={domains.length} icon={Globe} />
       {domains.length > 0 ? (
         <div className="space-y-2 mb-4">
@@ -566,26 +707,15 @@ function ProgramDetailModal({
                 </div>
                 <span className="text-[10px] uppercase text-[var(--dim)] font-medium">{d.type?.value}</span>
               </div>
-              {d.description && (
-                <p className="text-xs text-[var(--dim)] mt-1">{d.description}</p>
-              )}
-              {d.requiredSkills?.length > 0 && (
-                <div className="flex gap-1 mt-1.5">
-                  {d.requiredSkills.map((s, j) => (
-                    <span key={j} className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--surface2)] text-[var(--blue)] font-medium">
-                      {s.name}
-                    </span>
-                  ))}
-                </div>
-              )}
+              {d.description && <p className="text-xs text-[var(--dim)] mt-1">{d.description}</p>}
             </div>
           ))}
         </div>
       ) : (
-        <p className="text-xs text-[var(--dim)] mb-4">No scope domains available</p>
+        <p className="text-xs text-[var(--dim)] mb-4">No scope data</p>
       )}
 
-      {/* Rules of Engagement */}
+      {/* ROE */}
       {rules && (
         <>
           <SectionHeader title="Rules of Engagement" icon={Shield} />
@@ -608,24 +738,10 @@ function ProgramDetailModal({
                 <code className="text-[var(--blue)] font-mono text-[11px]">{testing.userAgent}</code>
               </div>
             )}
-            {testing?.requestHeader && (
-              <div className="text-xs">
-                <span className="text-[var(--dim)]">Required Header: </span>
-                <code className="text-[var(--blue)] font-mono text-[11px]">{testing.requestHeader}</code>
-              </div>
-            )}
-            {rules.description && (
-              <div className="mt-2 pt-2 border-t border-[var(--border)]">
-                <p className="text-xs text-[var(--dim)] whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">
-                  {rules.description}
-                </p>
-              </div>
-            )}
           </div>
         </>
       )}
 
-      {/* Link */}
       <a
         href={program.webLinks?.detail || "#"}
         target="_blank"
@@ -662,13 +778,8 @@ function ActivitiesTab() {
   }, []);
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" />
-      </div>
-    );
+    return <div className="flex items-center justify-center py-16"><Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" /></div>;
   }
-
   if (activities.length === 0) {
     return <EmptyState message="No recent activities" sub="Activity feed shows scope and rule changes" />;
   }
@@ -686,7 +797,6 @@ function ActivitiesTab() {
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--cyan)]/15 text-[var(--cyan)] font-bold">
                 {a.type?.value || "update"}
               </span>
-              {a.following && <Star className="w-3 h-3 text-[var(--accent)] fill-[var(--accent)]" />}
             </div>
             <p className="text-[10px] text-[var(--dim)] mt-0.5">
               <Clock className="w-3 h-3 inline mr-1" />
@@ -721,30 +831,20 @@ function PayoutsTab() {
     })();
   }, []);
 
-  const totalPaid = payouts
-    .filter((p) => p.status?.value === "paid")
-    .reduce((s, p) => s + (p.amount?.value || 0), 0);
-  const totalPending = payouts
-    .filter((p) => p.status?.value !== "paid")
-    .reduce((s, p) => s + (p.amount?.value || 0), 0);
+  const totalPaid = payouts.filter((p) => p.status?.value === "paid").reduce((s, p) => s + (p.amount?.value || 0), 0);
+  const totalPending = payouts.filter((p) => p.status?.value !== "paid").reduce((s, p) => s + (p.amount?.value || 0), 0);
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" />
-      </div>
-    );
+    return <div className="flex items-center justify-center py-16"><Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" /></div>;
   }
 
   return (
     <div className="space-y-4">
-      {/* Payout stats */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <StatBox icon={Wallet} label="Total Payouts" value={payouts.length} color="accent" />
         <StatBox icon={DollarSign} label="Total Paid" value={`€${totalPaid.toLocaleString()}`} color="accent" />
         <StatBox icon={Clock} label="Pending" value={`€${totalPending.toLocaleString()}`} color="orange" />
       </div>
-
       {payouts.length === 0 ? (
         <EmptyState message="No payouts yet" sub="Payouts from Intigriti will appear here" />
       ) : (
@@ -755,17 +855,11 @@ function PayoutsTab() {
                 <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
                   p.status?.value === "paid" ? "bg-[var(--accent-dim)]" : "bg-[var(--orange)]/15"
                 }`}>
-                  <DollarSign className={`w-4 h-4 ${
-                    p.status?.value === "paid" ? "text-[var(--accent)]" : "text-[var(--orange)]"
-                  }`} />
+                  <DollarSign className={`w-4 h-4 ${p.status?.value === "paid" ? "text-[var(--accent)]" : "text-[var(--orange)]"}`} />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold">
-                    {p.amount?.currency || "EUR"} {p.amount?.value?.toLocaleString() || "0"}
-                  </p>
-                  <p className="text-[10px] text-[var(--dim)]">
-                    {new Date(p.createdAt * 1000).toLocaleDateString()}
-                  </p>
+                  <p className="text-sm font-semibold">{p.amount?.currency || "EUR"} {p.amount?.value?.toLocaleString() || "0"}</p>
+                  <p className="text-[10px] text-[var(--dim)]">{new Date(p.createdAt * 1000).toLocaleDateString()}</p>
                 </div>
               </div>
               <span className={`text-[10px] px-2 py-1 rounded font-bold ${

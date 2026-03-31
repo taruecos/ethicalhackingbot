@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const botUrl = process.env.BOT_API_URL || "http://localhost:8080";
-const token = process.env.DASHBOARD_TOKEN || "";
+import { getProgramDetail } from "@/lib/intigriti";
 
 export async function GET(
   _req: NextRequest,
@@ -9,12 +7,10 @@ export async function GET(
 ) {
   const { id } = await params;
   try {
-    const res = await fetch(`${botUrl}/api/intigriti/programs/${id}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
+    const data = await getProgramDetail(id);
     return NextResponse.json(data);
-  } catch {
-    return NextResponse.json({ error: "Bot unreachable" }, { status: 502 });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Intigriti API error";
+    return NextResponse.json({ error: message }, { status: 502 });
   }
 }

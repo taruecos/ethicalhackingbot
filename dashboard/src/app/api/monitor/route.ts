@@ -3,17 +3,17 @@ import { prisma } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const botUrl = process.env.BOT_API_URL || "http://localhost:8080";
-  const token = process.env.DASHBOARD_TOKEN || "";
+const scanServiceUrl = process.env.SCAN_SERVICE_URL || "http://localhost:8000";
 
+export async function GET() {
   let online = false;
   let metrics = null;
   let botLogs: Array<{ id: string; timestamp: string; level: string; module: string; message: string; scanId?: string }> = [];
+  let liveScans: Array<Record<string, unknown>> = [];
 
-  // Try to fetch live data from the bot
+  // Fetch live data from Python scan service
   try {
-    const res = await fetch(`${botUrl}/api/monitor?token=${encodeURIComponent(token)}`, {
+    const res = await fetch(`${scanServiceUrl}/api/monitor`, {
       cache: "no-store",
       signal: AbortSignal.timeout(3000),
     });
@@ -22,19 +22,21 @@ export async function GET() {
       online = true;
       metrics = data.metrics || null;
       botLogs = data.logs || [];
+      liveScans = data.activeScans || [];
     }
   } catch {
-    // Bot unreachable
+    // Scan service unreachable
   }
 
-  // Get active scans from DB
+  // Get active scans from DB as fallback
   const runningScans = await prisma.scan.findMany({
     where: { status: "RUNNING" },
     include: { _count: { select: { findings: true } } },
     orderBy: { startedAt: "asc" },
   });
 
-  const activeScans = runningScans.map((scan) => {
+  // Merge: prefer live scan data, fallback to DB
+  const activeScans = liveScans.length > 0 ? liveScans : runningScans.map((scan) => {
     const config = scan.config as Record<string, unknown>;
     const phases = scan.phases as Array<{ name: string; time: string; status?: string }>;
     const stats = scan.stats as Record<string, number>;
@@ -50,7 +52,7 @@ export async function GET() {
       status: scan.status,
       phase: currentPhase?.name || "init",
       progress,
-      modulesTotal: modules.length || 8,
+      modulesTotal: modules.length || 3,
       modulesDone: completedPhases,
       currentModule: currentPhase?.name || "",
       startedAt: scan.startedAt?.toISOString() || "",
@@ -60,7 +62,6 @@ export async function GET() {
     };
   });
 
-  // Fallback metrics from DB if bot is offline
   if (!metrics) {
     const [totalScans, runningCount] = await Promise.all([
       prisma.scan.count(),

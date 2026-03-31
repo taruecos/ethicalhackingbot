@@ -1,21 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const botUrl = process.env.BOT_API_URL || "http://localhost:8080";
-const token = process.env.DASHBOARD_TOKEN || "";
+import { getPayouts } from "@/lib/intigriti";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const limit = searchParams.get("limit") || "100";
-  const offset = searchParams.get("offset") || "0";
+  const limit = Number(searchParams.get("limit") || "100");
+  const offset = Number(searchParams.get("offset") || "0");
 
   try {
-    const params = new URLSearchParams({ limit, offset });
-    const res = await fetch(`${botUrl}/api/intigriti/payouts?${params}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
+    const data = await getPayouts({ limit, offset });
     return NextResponse.json(data);
-  } catch {
-    return NextResponse.json({ error: "Bot unreachable" }, { status: 502 });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Intigriti API error";
+    return NextResponse.json({ error: message }, { status: 502 });
   }
 }

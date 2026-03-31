@@ -11,23 +11,30 @@ datasource db {
 // ── Bug Bounty Programs ──
 
 model Program {
-  id          String   @id @default(cuid())
-  platform    Platform
-  name        String
-  slug        String
-  url         String
-  scope       Json     @default("[]")
-  maxBounty   Float?
-  minBounty   Float?
-  managed     Boolean  @default(false)
-  active      Boolean  @default(true)
-  syncedAt    DateTime @default(now())
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  scans       Scan[]
+  id            String   @id @default(cuid())
+  platform      Platform
+  name          String
+  slug          String
+  url           String
+  intigritiId   String?
+  scope         Json     @default("[]")
+  compliance    Json     @default("{}")
+  maxBounty     Float?
+  minBounty     Float?
+  currency      String   @default("EUR")
+  industry      String?
+  programType   String?
+  confidentiality String?
+  managed       Boolean  @default(false)
+  active        Boolean  @default(true)
+  syncedAt      DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  scans         Scan[]
 
   @@unique([platform, slug])
   @@index([platform])
+  @@index([intigritiId])
 }
 
 enum Platform {
