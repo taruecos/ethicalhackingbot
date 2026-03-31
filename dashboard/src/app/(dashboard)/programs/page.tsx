@@ -406,11 +406,11 @@ function DBProgramCard({
           {/* Bounty */}
           <div className="flex items-center gap-1 mt-2 text-xs text-[var(--accent)]">
             <DollarSign className="w-3 h-3" />
-            {program.minBounty != null || program.maxBounty != null ? (
+            {(program.maxBounty != null && program.maxBounty > 0) ? (
               <>
-                {program.minBounty != null && `${program.currency} ${program.minBounty.toLocaleString()}`}
-                {program.minBounty != null && program.maxBounty != null && " — "}
-                {program.maxBounty != null && `${program.currency} ${program.maxBounty.toLocaleString()}`}
+                {program.minBounty != null && program.minBounty > 0 && `${program.currency} ${program.minBounty.toLocaleString()}`}
+                {program.minBounty != null && program.minBounty > 0 && program.maxBounty != null && " — "}
+                {`${program.currency} ${program.maxBounty.toLocaleString()}`}
               </>
             ) : (
               <span className="text-[var(--dim)]">Responsible Disclosure</span>
@@ -691,15 +691,15 @@ function ProgramDetailModal({
         </button>
       </div>
 
-      {(program.minBounty || program.maxBounty) && (
+      {(program.maxBounty && program.maxBounty.value > 0) && (
         <div className="bg-[var(--accent-dim)] border border-[var(--accent)]/20 rounded-lg p-3 mb-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--accent)]">
             <DollarSign className="w-4 h-4" />
             Bounty Range
           </div>
           <p className="text-xl font-bold mt-1">
-            {program.minBounty && `${program.minBounty.currency} ${program.minBounty.value.toLocaleString()}`}
-            {program.minBounty && program.maxBounty && " — "}
+            {program.minBounty && program.minBounty.value > 0 && `${program.minBounty.currency} ${program.minBounty.value.toLocaleString()}`}
+            {program.minBounty && program.minBounty.value > 0 && program.maxBounty && " — "}
             {program.maxBounty && `${program.maxBounty.currency} ${program.maxBounty.value.toLocaleString()}`}
           </p>
         </div>

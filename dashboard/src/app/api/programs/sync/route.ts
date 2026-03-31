@@ -35,7 +35,17 @@ export async function POST() {
         detail = raw;
       }
 
-      const normalized = normalizeProgram(detail);
+      // Merge list data into detail — the detail endpoint omits some fields
+      // (e.g. minBounty, maxBounty) that are only available in the list response
+      const merged = { ...detail };
+      if (merged.minBounty === undefined && raw.minBounty !== undefined) {
+        merged.minBounty = raw.minBounty;
+      }
+      if (merged.maxBounty === undefined && raw.maxBounty !== undefined) {
+        merged.maxBounty = raw.maxBounty;
+      }
+
+      const normalized = normalizeProgram(merged);
       const compliance = normalized.compliance as Record<string, unknown>;
 
       if (compliance?.automatedToolingStatus === "allowed") {
