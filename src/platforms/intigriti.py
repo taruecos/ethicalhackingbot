@@ -1,0 +1,141 @@
+"""Intigriti Researcher API Connector"""
+import os
+import httpx
+from typing import Optional
+
+BASE_URL = "https://api.intigriti.com/external/researcher/v1"
+
+
+class IntigritiClient:
+    """Client for the Intigriti Researcher API (v1.0 Beta)."""
+
+    def __init__(self, api_token: Optional[str] = None):
+        self.token = api_token or os.environ.get("INTIGRITI_API_TOKEN", "")
+        self.headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/json",
+        }
+
+    async def _get(self, path: str, params: Optional[dict] = None) -> dict:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{BASE_URL}{path}",
+                headers=self.headers,
+                params=params or {},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def get_programs(
+        self,
+        status_id: Optional[int] = None,
+        type_id: Optional[int] = None,
+        following: Optional[bool] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict:
+        """List all programs accessible to the researcher."""
+        params = {"limit": limit, "offset": offset}
+        if status_id is not None:
+            params["statusId"] = status_id
+        if type_id is not None:
+            params["typeId"] = type_id
+        if following is not None:
+            params["following"] = str(following).lower()
+        return await self._get("/programs", params)
+
+    async def get_program_detail(self, program_id: str) -> dict:
+        """Get full program details including scope and rules."""
+        return await self._get(f"/programs/{program_id}")
+
+    async def get_activities(
+        self,
+        created_since: Optional[int] = None,
+        following: Optional[bool] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        """Get recent program activities (scope/rule changes)."""
+        params = {"limit": limit, "offset": offset}
+        if created_since is not None:
+            params["createdSince"] = created_since
+        if following is not None:
+            params["following"] = str(following).lower()
+        return await self._get("/programs/activities", params)
+
+    async def get_payouts(
+        self,
+        status_id: Optional[int] = None,
+        created_since: Optional[int] = None,
+        paid_since: Optional[int] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict:
+        """Get all payouts (beta)."""
+        params = {"limit": limit, "offset": offset}
+        if status_id is not None:
+            params["statusId"] = status_id
+        if created_since is not None:
+            params["createdSince"] = created_since
+        if paid_since is not None:
+            params["paidSince"] = paid_since
+        return await self._get("/payouts", params)
+
+    async def get_program_domains(self, program_id: str, version_id: str) -> dict:
+        """Get specific version of program domains/scope."""
+        return await self._get(f"/programs/{program_id}/domains/{version_id}")
+
+    async def get_program_rules(self, program_id: str, version_id: str) -> dict:
+        """Get specific version of rules of engagement."""
+        return await self._get(
+            f"/programs/{program_id}/rules-of-engagements/{version_id}"
+        )
+
+    def normalize_program(self, raw: dict) -> dict:
+        """Convert Intigriti API program to our DB schema format."""
+        domains = []
+        if "domains" in raw and "content" in raw.get("domains", {}):
+            for d in raw["domains"]["content"]:
+                domains.append({
+                    "type": d.get("type", {}).get("value", "url"),
+                    "asset": d.get("endpoint", ""),
+                    "tier": d.get("tier", {}).get("value", ""),
+                    "description": d.get("description", ""),
+                })
+
+        min_bounty = raw.get("minBounty", {})
+        max_bounty = raw.get("maxBounty", {})
+
+        return {
+            "platform": "INTIGRITI",
+            "name": raw.get("name", ""),
+            "slug": raw.get("handle", ""),
+            "url": raw.get("webLinks", {}).get("detail", ""),
+            "intigriti_id": raw.get("id", ""),
+            "scope": domains,
+            "min_bounty": min_bounty.get("value") if isinstance(min_bounty, dict) else None,
+            "max_bounty": max_bounty.get("value") if isinstance(max_bounty, dict) else None,
+            "currency": max_bounty.get("currency", "EUR") if isinstance(max_bounty, dict) else "EUR",
+            "status": raw.get("status", {}).get("value", ""),
+            "type": raw.get("type", {}).get("value", ""),
+            "confidentiality": raw.get("confidentialityLevel", {}).get("value", ""),
+            "following": raw.get("following", False),
+            "industry": raw.get("industry", ""),
+        }
+
+    async def fetch_all_programs_normalized(self) -> list[dict]:
+        """Fetch all programs and normalize them."""
+        all_programs = []
+        offset = 0
+        limit = 100
+        while True:
+            data = await self.get_programs(limit=limit, offset=offset)
+            records = data.get("records", [])
+            if not records:
+                break
+            for r in records:
+                all_programs.append(self.normalize_program(r))
+            if len(records) < limit:
+                break
+            offset += limit
+        return all_programs

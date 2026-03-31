@@ -1,0 +1,149 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-arm64-openssl-3.0.x", "debian-openssl-3.0.x", "debian-openssl-1.1.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Bug Bounty Programs ──
+
+model Program {
+  id          String   @id @default(cuid())
+  platform    Platform
+  name        String
+  slug        String
+  url         String
+  scope       Json     @default("[]")
+  maxBounty   Float?
+  minBounty   Float?
+  managed     Boolean  @default(false)
+  active      Boolean  @default(true)
+  syncedAt    DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  scans       Scan[]
+
+  @@unique([platform, slug])
+  @@index([platform])
+}
+
+enum Platform {
+  INTIGRITI
+  HACKERONE
+  YESWEHACK
+  MANUAL
+}
+
+// ── Scans ──
+
+model Scan {
+  id          String     @id @default(cuid())
+  target      String
+  status      ScanStatus @default(QUEUED)
+  config      Json       @default("{}")
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  duration    Int?
+  error       String?
+  phases      Json       @default("[]")
+  stats       Json       @default("{}")
+  programId   String?
+  program     Program?   @relation(fields: [programId], references: [id])
+  findings    Finding[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([status])
+  @@index([target])
+}
+
+enum ScanStatus {
+  QUEUED
+  RUNNING
+  COMPLETE
+  ERROR
+  CANCELLED
+}
+
+// ── Findings ──
+
+model Finding {
+  id           String          @id @default(cuid())
+  scanId       String
+  scan         Scan            @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  module       String
+  severity     Severity
+  confidence   Float           @default(0.5)
+  title        String
+  description  String          @db.Text
+  url          String?
+  evidence     Json            @default("{}")
+  remediation  String?         @db.Text
+  status       FindingStatus   @default(NEW)
+  falsePositive Boolean        @default(false)
+  cweId        String?
+  cvssScore    Float?
+  notes        String?         @db.Text
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([scanId])
+  @@index([severity])
+  @@index([status])
+  @@index([module])
+}
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum FindingStatus {
+  NEW
+  CONFIRMED
+  FALSE_POSITIVE
+  FIXED
+  ACCEPTED
+  REPORTED
+}
+
+// ── Reports ──
+
+model Report {
+  id          String       @id @default(cuid())
+  title       String
+  target      String
+  platform    Platform?
+  content     Json         @default("{}")
+  format      ReportFormat @default(MARKDOWN)
+  submitted   Boolean      @default(false)
+  submittedAt DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+enum ReportFormat {
+  MARKDOWN
+  PDF
+  HTML
+}
+
+// ── Stats Tracking ──
+
+model BountyRecord {
+  id          String   @id @default(cuid())
+  platform    Platform
+  program     String
+  amount      Float
+  currency    String   @default("EUR")
+  status      String
+  reportTitle String?
+  awardedAt   DateTime
+  createdAt   DateTime @default(now())
+}
