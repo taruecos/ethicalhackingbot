@@ -218,30 +218,60 @@ export default function ProgramsPage() {
 
 function DBProgramsTab() {
   const [programs, setPrograms] = useState<DBProgram[]>([]);
+  const [industries, setIndustries] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [complianceFilter, setComplianceFilter] = useState(true); // default: show compliant only
+  const [complianceFilter, setComplianceFilter] = useState(true);
+  const [bountyFilter, setBountyFilter] = useState<"all" | "bounty" | "disclosure">("all");
+  const [industryFilter, setIndustryFilter] = useState<string>("");
+  const [confidentialityFilter, setConfidentialityFilter] = useState<string>("");
+  const [safeHarbourFilter, setSafeHarbourFilter] = useState<"all" | "yes" | "no">("all");
+  const [sortBy, setSortBy] = useState<"syncedAt" | "maxBounty" | "name">("syncedAt");
+  const [showFilters, setShowFilters] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [scanning, setScanning] = useState<string | null>(null);
   const [scannedIds, setScannedIds] = useState<Set<string>>(new Set());
 
+  const activeFilterCount = [
+    complianceFilter,
+    bountyFilter !== "all",
+    industryFilter !== "",
+    confidentialityFilter !== "",
+    safeHarbourFilter !== "all",
+    sortBy !== "syncedAt",
+  ].filter(Boolean).length;
+
   const fetchPrograms = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ limit: "200" });
+      const params = new URLSearchParams({ limit: "500" });
       if (complianceFilter) params.set("compliant", "true");
       if (search) params.set("search", search);
+      if (bountyFilter === "bounty") params.set("hasBounty", "true");
+      if (bountyFilter === "disclosure") params.set("hasBounty", "false");
+      if (industryFilter) params.set("industry", industryFilter);
+      if (confidentialityFilter) params.set("confidentiality", confidentialityFilter);
+      params.set("sortBy", sortBy);
+      params.set("sortDir", sortBy === "maxBounty" ? "desc" : sortBy === "name" ? "asc" : "desc");
       const res = await fetch(`/api/programs?${params}`);
       if (res.ok) {
         const data = await res.json();
-        setPrograms(data.programs || []);
+        let progs = data.programs || [];
+        if (safeHarbourFilter !== "all") {
+          progs = progs.filter((p: DBProgram) => {
+            const sh = p.compliance?.safeHarbour;
+            return safeHarbourFilter === "yes" ? sh === true : sh === false;
+          });
+        }
+        setPrograms(progs);
+        if (data.industries) setIndustries(data.industries);
       }
     } catch {
       // silent
     } finally {
       setLoading(false);
     }
-  }, [complianceFilter, search]);
+  }, [complianceFilter, search, bountyFilter, industryFilter, confidentialityFilter, safeHarbourFilter, sortBy]);
 
   useEffect(() => {
     fetchPrograms();
@@ -299,7 +329,25 @@ function DBProgramsTab() {
               className="w-full pl-10 pr-4 py-2.5 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm focus:outline-none focus:border-[var(--accent)] transition-colors"
             />
           </div>
+          <button
+            onClick={() => setShowFilters(!showFilters)}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors border ${
+              showFilters || activeFilterCount > 1
+                ? "bg-[var(--accent-dim)] text-[var(--accent)] border-[var(--accent)]/30"
+                : "bg-[var(--bg)] text-[var(--dim)] border-[var(--border)] hover:text-[var(--text)]"
+            }`}
+          >
+            <Filter className="w-3.5 h-3.5" />
+            Filters
+            {activeFilterCount > 1 && (
+              <span className="w-4 h-4 rounded-full bg-[var(--accent)] text-black text-[9px] font-bold flex items-center justify-center">
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
         </div>
+
+        {/* Quick filter: compliance */}
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setComplianceFilter(!complianceFilter)}
@@ -312,7 +360,107 @@ function DBProgramsTab() {
             <ShieldCheck className="w-3 h-3" />
             Automated Tooling Allowed
           </button>
+          {/* Quick bounty filter pills */}
+          {(["all", "bounty", "disclosure"] as const).map((val) => {
+            const labels = { all: "All Programs", bounty: "Has Bounty", disclosure: "Responsible Disclosure" };
+            const icons = { all: Globe, bounty: DollarSign, disclosure: Shield };
+            const Icon = icons[val];
+            return (
+              <button
+                key={val}
+                onClick={() => setBountyFilter(val)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                  bountyFilter === val
+                    ? "bg-[var(--accent-dim)] text-[var(--accent)] border border-[var(--accent)]/30"
+                    : "bg-[var(--bg)] text-[var(--dim)] border border-[var(--border)]"
+                }`}
+              >
+                <Icon className="w-3 h-3" />
+                {labels[val]}
+              </button>
+            );
+          })}
         </div>
+
+        {/* Extended filters panel */}
+        {showFilters && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-[var(--border)]">
+            {/* Industry */}
+            <div>
+              <label className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold mb-1 block">Industry</label>
+              <select
+                value={industryFilter}
+                onChange={(e) => setIndustryFilter(e.target.value)}
+                className="w-full px-3 py-2 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-xs focus:outline-none focus:border-[var(--accent)] transition-colors"
+              >
+                <option value="">All Industries</option>
+                {industries.map((ind) => (
+                  <option key={ind} value={ind}>{ind}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Confidentiality */}
+            <div>
+              <label className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold mb-1 block">Confidentiality</label>
+              <select
+                value={confidentialityFilter}
+                onChange={(e) => setConfidentialityFilter(e.target.value)}
+                className="w-full px-3 py-2 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-xs focus:outline-none focus:border-[var(--accent)] transition-colors"
+              >
+                <option value="">All</option>
+                <option value="public">Public</option>
+                <option value="application_only">Application Only</option>
+              </select>
+            </div>
+
+            {/* Safe Harbour */}
+            <div>
+              <label className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold mb-1 block">Safe Harbour</label>
+              <select
+                value={safeHarbourFilter}
+                onChange={(e) => setSafeHarbourFilter(e.target.value as "all" | "yes" | "no")}
+                className="w-full px-3 py-2 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-xs focus:outline-none focus:border-[var(--accent)] transition-colors"
+              >
+                <option value="all">All</option>
+                <option value="yes">Safe Harbour Only</option>
+                <option value="no">No Safe Harbour</option>
+              </select>
+            </div>
+
+            {/* Sort by */}
+            <div>
+              <label className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold mb-1 block">Sort By</label>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as "syncedAt" | "maxBounty" | "name")}
+                className="w-full px-3 py-2 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-xs focus:outline-none focus:border-[var(--accent)] transition-colors"
+              >
+                <option value="syncedAt">Recently Synced</option>
+                <option value="maxBounty">Highest Bounty</option>
+                <option value="name">Name (A-Z)</option>
+              </select>
+            </div>
+
+            {/* Reset all */}
+            {activeFilterCount > 1 && (
+              <button
+                onClick={() => {
+                  setComplianceFilter(true);
+                  setBountyFilter("all");
+                  setIndustryFilter("");
+                  setConfidentialityFilter("");
+                  setSafeHarbourFilter("all");
+                  setSortBy("syncedAt");
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-[var(--red)] bg-[var(--red)]/10 border border-[var(--red)]/20 hover:bg-[var(--red)]/20 transition-colors self-end"
+              >
+                <X className="w-3 h-3" />
+                Reset Filters
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Stats */}
