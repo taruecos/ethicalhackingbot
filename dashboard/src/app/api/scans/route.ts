@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { domain, programId, depth, modules, rateLimit } = body;
+  const { domain, programId, depth, modules, rateLimit, rulesOfEngagement } = body;
 
   if (!domain) {
     return NextResponse.json({ error: "Domain required" }, { status: 400 });
@@ -53,6 +53,7 @@ export async function POST(req: NextRequest) {
         depth: depth || "standard",
         modules: modules || [],
         rate_limit: rateLimit || 30,
+        rules_of_engagement: rulesOfEngagement || null,
       }),
     });
 

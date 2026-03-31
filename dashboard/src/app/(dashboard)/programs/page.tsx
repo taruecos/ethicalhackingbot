@@ -254,6 +254,13 @@ function DBProgramsTab() {
       const firstDomain = scope[0]?.endpoint || scope[0]?.asset || program.slug;
       const domain = (firstDomain || "").replace(/^\*\./, "");
 
+      const compliance = program.compliance as Record<string, unknown> | null;
+      const rulesOfEngagement = {
+        userAgent: compliance?.userAgent as string | null,
+        requestHeader: compliance?.requestHeader as string | null,
+        safeHarbour: compliance?.safeHarbour as boolean | null,
+      };
+
       await fetch("/api/scans", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -263,6 +270,7 @@ function DBProgramsTab() {
           depth: "standard",
           modules: ["idor", "access_control", "info_disclosure"],
           rateLimit: 30,
+          rulesOfEngagement,
         }),
       });
       setScannedIds((prev) => new Set([...prev, program.id]));

@@ -56,6 +56,12 @@ def add_log(level: str, module: str, message: str, scan_id: str | None = None):
     logger.info(f"[{module}] {message}")
 
 
+class RulesOfEngagement(BaseModel):
+    userAgent: str | None = None
+    requestHeader: str | None = None
+    safeHarbour: bool | None = None
+
+
 class ScanRequest(BaseModel):
     domain: str
     scan_id: str
@@ -64,6 +70,7 @@ class ScanRequest(BaseModel):
     depth: str = "standard"
     modules: list[str] | None = None
     rate_limit: int = 30
+    rules_of_engagement: RulesOfEngagement | None = None
 
 
 class ScanStatus(BaseModel):
@@ -219,6 +226,23 @@ async def _run_scan(req: ScanRequest, state: dict):
     target_url = f"https://{req.domain}" if not req.domain.startswith("http") else req.domain
     findings = []
 
+    # Build headers from rules of engagement
+    scan_headers: dict[str, str] = {}
+    if req.rules_of_engagement:
+        roe = req.rules_of_engagement
+        if roe.userAgent:
+            scan_headers["User-Agent"] = roe.userAgent
+            add_log("INFO", "compliance", f"Using custom User-Agent: {roe.userAgent}", req.scan_id)
+        if roe.requestHeader:
+            # Format: "X-Header-Name: value" or "X-Header: {username}"
+            if ":" in roe.requestHeader:
+                key, val = roe.requestHeader.split(":", 1)
+                scan_headers[key.strip()] = val.strip()
+                add_log("INFO", "compliance", f"Using custom header: {key.strip()}", req.scan_id)
+
+    # Use program-specific rate limit (default 1 req/s for compliance)
+    request_delay = max(1.0, 1.0)
+
     try:
         # Phase 1: Reconnaissance
         state["phase"] = "recon"
@@ -227,7 +251,7 @@ async def _run_scan(req: ScanRequest, state: dict):
         add_log("INFO", "recon", f"Crawling {target_url}", req.scan_id)
         await _notify_dashboard(req, state)
 
-        async with HttpClient(concurrency=3, request_delay=1.0, timeout=30) as http:
+        async with HttpClient(concurrency=3, request_delay=request_delay, timeout=30, headers=scan_headers) as http:
             crawler = EndpointCrawler(http, max_depth=3)
             endpoints = await crawler.crawl(target_url)
             add_log("INFO", "recon", f"Discovered {len(endpoints)} endpoints", req.scan_id)
