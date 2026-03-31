@@ -144,6 +144,6 @@ export function normalizeProgram(raw: Record<string, unknown>) {
     industry: (raw.industry as string) || null,
     programType: (pType?.value as string) || null,
     confidentiality: (conf?.value as string) || null,
-    active: status?.value === "open",
+    active: (status?.value as string)?.toLowerCase() === "open",
   };
 }
