@@ -35,6 +35,13 @@ export async function GET() {
     orderBy: { startedAt: "asc" },
   });
 
+  // Get queued scans waiting to be started
+  const queuedScans = await prisma.scan.findMany({
+    where: { status: "QUEUED" },
+    include: { program: true, _count: { select: { findings: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+
   // Merge: prefer live scan data, fallback to DB
   const activeScans = liveScans.length > 0 ? liveScans : runningScans.map((scan) => {
     const config = scan.config as Record<string, unknown>;
@@ -80,9 +87,19 @@ export async function GET() {
     };
   }
 
+  const queuedScansMapped = queuedScans.map((scan) => ({
+    id: scan.id,
+    target: scan.target,
+    status: "QUEUED",
+    programName: scan.program?.name || null,
+    config: scan.config,
+    createdAt: scan.createdAt.toISOString(),
+  }));
+
   return NextResponse.json({
     online,
     activeScans,
+    queuedScans: queuedScansMapped,
     metrics,
     logs: botLogs,
   });

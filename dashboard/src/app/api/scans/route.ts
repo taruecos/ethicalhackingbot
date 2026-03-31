@@ -37,33 +37,6 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  // Forward to Python scan service
-  try {
-    const dashboardUrl = process.env.DASHBOARD_URL || "http://localhost:3000";
-    const token = process.env.DASHBOARD_TOKEN || "";
-
-    await fetch(`${scanServiceUrl}/api/scan`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        domain: target,
-        scan_id: scan.id,
-        callback_url: `${dashboardUrl}/api/scans/${scan.id}/progress`,
-        callback_token: token,
-        depth: depth || "standard",
-        modules: modules || [],
-        rate_limit: rateLimit || 30,
-        rules_of_engagement: rulesOfEngagement || null,
-      }),
-    });
-
-    await prisma.scan.update({
-      where: { id: scan.id },
-      data: { status: "RUNNING", startedAt: new Date() },
-    });
-  } catch {
-    // Scan service unreachable — scan stays queued
-  }
-
+  // Scan stays QUEUED — user starts it manually from Live Monitor
   return NextResponse.json(scan, { status: 201 });
 }

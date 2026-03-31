@@ -22,6 +22,15 @@ import {
 } from "lucide-react";
 import { StatCard } from "@/components/stat-card";
 
+interface QueuedScan {
+  id: string;
+  target: string;
+  status: string;
+  programName: string | null;
+  config: Record<string, unknown>;
+  createdAt: string;
+}
+
 interface ScanProgress {
   id: string;
   target: string;
@@ -74,6 +83,8 @@ const PHASE_STEPS = [
 
 export default function LiveMonitorPage() {
   const [activeScans, setActiveScans] = useState<ScanProgress[]>([]);
+  const [queuedScans, setQueuedScans] = useState<QueuedScan[]>([]);
+  const [startingId, setStartingId] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [botOnline, setBotOnline] = useState(false);
@@ -92,6 +103,7 @@ export default function LiveMonitorPage() {
         const data = await res.json();
         setBotOnline(data.online);
         if (data.activeScans) setActiveScans(data.activeScans);
+                if (data.queuedScans) setQueuedScans(data.queuedScans);
         if (data.metrics) setMetrics(data.metrics);
         if (data.logs && data.logs.length > 0) {
           setLogs((prev) => {
@@ -127,6 +139,21 @@ export default function LiveMonitorPage() {
     if (!logsContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = logsContainerRef.current;
     setAutoScroll(scrollHeight - scrollTop - clientHeight < 50);
+  }
+
+  async function startScan(scanId: string) {
+    setStartingId(scanId);
+    try {
+      const res = await fetch(`/api/scans/${scanId}/start`, { method: "POST" });
+      if (res.ok) {
+        setQueuedScans((prev) => prev.filter((s) => s.id !== scanId));
+        fetchStatus();
+      }
+    } catch {
+      // silent
+    } finally {
+      setStartingId(null);
+    }
   }
 
   function getPhaseIndex(phase: string): number {
@@ -231,6 +258,47 @@ export default function LiveMonitorPage() {
             color="var(--cyan)"
             subtitle={`${metrics.activeConnections} connections`}
           />
+        </div>
+      )}
+
+      {/* Scan Queue */}
+      {queuedScans.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold">
+            Scan Queue ({queuedScans.length})
+          </h3>
+          {queuedScans.map((scan) => (
+            <div
+              key={scan.id}
+              className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3 sm:p-4 flex flex-wrap items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-[var(--orange)]/15 flex items-center justify-center shrink-0">
+                  <Clock className="w-4 h-4 text-[var(--orange)]" />
+                </div>
+                <div>
+                  <p className="text-sm font-bold">{scan.target}</p>
+                  <p className="text-xs text-[var(--dim)]">
+                    {scan.programName || "Manual scan"}
+                    {" • Queued "}
+                    {new Date(scan.createdAt).toLocaleTimeString()}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => startScan(scan.id)}
+                disabled={startingId === scan.id}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--accent)] text-black text-xs font-bold hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                {startingId === scan.id ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Play className="w-3.5 h-3.5" />
+                )}
+                Start Scan
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
@@ -349,12 +417,12 @@ export default function LiveMonitorPage() {
         </div>
       )}
 
-      {/* No active scans */}
-      {activeScans.length === 0 && !loading && (
+      {/* No scans at all */}
+      {activeScans.length === 0 && queuedScans.length === 0 && !loading && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-8 text-center">
           <Activity className="w-8 h-8 text-[var(--dim)] mx-auto mb-3" />
-          <p className="text-sm text-[var(--dim)]">No active scans</p>
-          <p className="text-xs text-[var(--dim)] mt-1">Launch a scan from Mission Control to see live progress here</p>
+          <p className="text-sm text-[var(--dim)]">No scans in queue</p>
+          <p className="text-xs text-[var(--dim)] mt-1">Add a scan from Programs to see it here</p>
         </div>
       )}
 
