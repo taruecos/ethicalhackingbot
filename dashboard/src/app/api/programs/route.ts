@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
   if (compliant === "true") {
     filtered = programs.filter((p) => {
       const c = p.compliance as Record<string, unknown> | null;
-      return c?.automatedToolingStatus === "allowed";
+      return c?.automatedToolingStatus === "allowed" || c?.automatedToolingStatus === "conditional";
     });
   }
 

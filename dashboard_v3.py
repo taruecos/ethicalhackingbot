@@ -19,7 +19,9 @@ from starlette.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-AUTH_TOKEN = os.environ.get("DASHBOARD_TOKEN", "HUBJ4vhaeRlxM3BdsUToM2pehP_lSb1CCXCJtGxw5NI")
+AUTH_TOKEN = os.environ.get("DASHBOARD_TOKEN")
+if not AUTH_TOKEN:
+    raise RuntimeError("DASHBOARD_TOKEN environment variable is required")
 security = HTTPBearer(auto_error=False)
 
 app = FastAPI(title="BugBountyBot Dashboard")

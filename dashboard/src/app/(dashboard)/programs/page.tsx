@@ -369,9 +369,10 @@ function DBProgramCard({
   const toolingStatus = compliance.automatedToolingStatus || "unknown";
   const scope = program.scope || [];
 
-  const ToolingIcon = toolingStatus === "allowed" ? ShieldCheck : toolingStatus === "not_allowed" ? ShieldX : ShieldQuestion;
-  const toolingColor = toolingStatus === "allowed" ? "text-[var(--accent)]" : toolingStatus === "not_allowed" ? "text-[var(--red)]" : "text-[var(--orange)]";
-  const toolingLabel = toolingStatus === "allowed" ? "Automated OK" : toolingStatus === "not_allowed" ? "No Automated" : "Unknown";
+  const isToolingAllowed = toolingStatus === "allowed" || toolingStatus === "conditional";
+  const ToolingIcon = toolingStatus === "allowed" ? ShieldCheck : toolingStatus === "conditional" ? ShieldQuestion : toolingStatus === "not_allowed" ? ShieldX : ShieldQuestion;
+  const toolingColor = toolingStatus === "allowed" ? "text-[var(--accent)]" : toolingStatus === "conditional" ? "text-[var(--orange)]" : toolingStatus === "not_allowed" ? "text-[var(--red)]" : "text-[var(--dim)]";
+  const toolingLabel = toolingStatus === "allowed" ? "Automated OK" : toolingStatus === "conditional" ? "Conditional" : toolingStatus === "not_allowed" ? "No Automated" : "Unknown";
 
   return (
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden hover:border-[var(--accent)]/30 transition-colors">
@@ -396,21 +397,25 @@ function DBProgramCard({
             </span>
             {program.industry && <span className="text-[10px] text-[var(--dim)]">· {program.industry}</span>}
             <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold flex items-center gap-1 ${
-              toolingStatus === "allowed" ? "bg-[var(--accent-dim)] text-[var(--accent)]" : "bg-[var(--red)]/15 text-[var(--red)]"
+              toolingStatus === "allowed" ? "bg-[var(--accent-dim)] text-[var(--accent)]" : toolingStatus === "conditional" ? "bg-[var(--orange)]/15 text-[var(--orange)]" : "bg-[var(--red)]/15 text-[var(--red)]"
             }`}>
               <ToolingIcon className="w-3 h-3" />
               {toolingLabel}
             </span>
           </div>
           {/* Bounty */}
-          {(program.minBounty || program.maxBounty) && (
-            <div className="flex items-center gap-1 mt-2 text-xs text-[var(--accent)]">
-              <DollarSign className="w-3 h-3" />
-              {program.minBounty && `${program.currency} ${program.minBounty.toLocaleString()}`}
-              {program.minBounty && program.maxBounty && " — "}
-              {program.maxBounty && `${program.currency} ${program.maxBounty.toLocaleString()}`}
-            </div>
-          )}
+          <div className="flex items-center gap-1 mt-2 text-xs text-[var(--accent)]">
+            <DollarSign className="w-3 h-3" />
+            {program.minBounty != null || program.maxBounty != null ? (
+              <>
+                {program.minBounty != null && `${program.currency} ${program.minBounty.toLocaleString()}`}
+                {program.minBounty != null && program.maxBounty != null && " — "}
+                {program.maxBounty != null && `${program.currency} ${program.maxBounty.toLocaleString()}`}
+              </>
+            ) : (
+              <span className="text-[var(--dim)]">Responsible Disclosure</span>
+            )}
+          </div>
           <p className="text-[10px] text-[var(--dim)] mt-1">
             {scope.length} domain{scope.length > 1 ? "s" : ""} in scope
           </p>
@@ -427,11 +432,11 @@ function DBProgramCard({
           </button>
           <button
             onClick={onScan}
-            disabled={isScanning || isScanned || !program.active || toolingStatus !== "allowed"}
+            disabled={isScanning || isScanned || !program.active || !isToolingAllowed}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all whitespace-nowrap ${
               isScanned
                 ? "bg-[var(--accent-dim)] text-[var(--accent)]"
-                : toolingStatus !== "allowed"
+                : !isToolingAllowed
                   ? "bg-[var(--surface2)] text-[var(--dim)] opacity-40 cursor-not-allowed"
                   : "bg-[var(--surface2)] text-[var(--dim)] hover:text-[var(--accent)] hover:bg-[var(--accent-dim)]"
             } disabled:opacity-40`}
