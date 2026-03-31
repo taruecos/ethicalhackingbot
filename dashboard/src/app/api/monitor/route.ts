@@ -10,6 +10,7 @@ export async function GET() {
   let metrics = null;
   let botLogs: Array<{ id: string; timestamp: string; level: string; module: string; message: string; scanId?: string }> = [];
   let liveScans: Array<Record<string, unknown>> = [];
+  let aiInsights: Array<Record<string, unknown>> = [];
 
   // Fetch live data from Python scan service
   try {
@@ -23,6 +24,7 @@ export async function GET() {
       metrics = data.metrics || null;
       botLogs = data.logs || [];
       liveScans = data.activeScans || [];
+      aiInsights = data.aiInsights || [];
     }
   } catch {
     // Scan service unreachable
@@ -102,5 +104,6 @@ export async function GET() {
     queuedScans: queuedScansMapped,
     metrics,
     logs: botLogs,
+    aiInsights,
   });
 }

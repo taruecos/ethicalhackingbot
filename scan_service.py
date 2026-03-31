@@ -38,7 +38,11 @@ app.add_middleware(
 # In-memory scan state
 active_scans: dict[str, dict] = {}
 scan_logs: list[dict] = []
+ai_insights: list[dict] = []  # AI analysis messages for dashboard
 start_time = time.time()
+
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
+AI_MODEL = os.environ.get("AI_MODEL", "qwen2:0.5b")
 
 
 def add_log(level: str, module: str, message: str, scan_id: str | None = None):
@@ -54,6 +58,70 @@ def add_log(level: str, module: str, message: str, scan_id: str | None = None):
     if len(scan_logs) > 1000:
         scan_logs[:] = scan_logs[-500:]
     logger.info(f"[{module}] {message}")
+
+
+def add_ai_insight(scan_id: str, phase: str, analysis: str, recommendations: list[str] | None = None):
+    """Store an AI analysis insight for real-time dashboard display."""
+    entry = {
+        "id": str(uuid.uuid4())[:8],
+        "timestamp": datetime.now().isoformat(),
+        "scanId": scan_id,
+        "phase": phase,
+        "analysis": analysis,
+        "recommendations": recommendations or [],
+    }
+    ai_insights.append(entry)
+    if len(ai_insights) > 500:
+        ai_insights[:] = ai_insights[-250:]
+    # Also add to regular logs for visibility
+    add_log("INFO", "ai-analyst", f"[{phase}] {analysis[:200]}", scan_id)
+
+
+async def ask_ai(prompt: str, scan_id: str) -> str:
+    """Send scan results to Ollama for analysis. Returns the AI's analysis text."""
+    import httpx
+
+    system_prompt = """You are an expert penetration tester and security analyst. You are analyzing scan results from an automated security scanner in real-time.
+
+Your job:
+1. Analyze the scan results provided
+2. Identify the most interesting/critical findings
+3. Suggest what to scan next based on what was found
+4. Explain your reasoning concisely
+
+Be direct, technical, and actionable. Focus on:
+- What vulnerabilities were found and their severity
+- Patterns that suggest deeper issues
+- Which endpoints or services deserve more investigation
+- Attack chains that could be constructed from multiple findings
+
+Format your response as:
+ANALYSIS: [your analysis of current findings]
+NEXT_SCAN: [what to scan next and why]
+PRIORITY_TARGETS: [comma-separated list of URLs or endpoints to investigate deeper]"""
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": AI_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                },
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("message", {}).get("content", "No analysis available")
+            else:
+                logger.warning(f"Ollama returned {response.status_code}")
+                return f"AI analysis unavailable (HTTP {response.status_code})"
+    except Exception as e:
+        logger.warning(f"AI analysis failed: {e}")
+        return f"AI analysis unavailable: {e}"
 
 
 class RulesOfEngagement(BaseModel):
@@ -123,6 +191,7 @@ async def monitor():
             "elapsed": (time.time() - scan.get("start_time", time.time())) * 1000,
             "findingsCount": len(scan.get("findings", [])),
             "stats": scan.get("stats", {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}),
+            "aiInsights": [i for i in ai_insights if i.get("scanId") == sid],
         })
 
     return {
@@ -139,7 +208,17 @@ async def monitor():
             "activeConnections": len(active_scans),
         },
         "logs": scan_logs[-100:],
+        "aiInsights": ai_insights[-50:],
     }
+
+
+@app.get("/api/ai-insights")
+async def get_ai_insights(scan_id: str | None = None):
+    """Get AI analysis insights, optionally filtered by scan ID."""
+    if scan_id:
+        filtered = [i for i in ai_insights if i.get("scanId") == scan_id]
+        return {"insights": filtered}
+    return {"insights": ai_insights[-50:]}
 
 
 @app.post("/api/scan")
@@ -222,7 +301,11 @@ async def _notify_dashboard(req: ScanRequest, scan_state: dict, event: str = "pr
 
 
 async def _run_scan(req: ScanRequest, state: dict):
-    """Execute the actual scan — pure Python, no AI."""
+    """Execute the scan with AI-powered analysis loop.
+
+    Flow: scan phase → send results to AI → AI analyzes and recommends next scan → repeat.
+    The AI acts as an analyst, not an operator — it reads results and guides the scan strategy.
+    """
     target_url = f"https://{req.domain}" if not req.domain.startswith("http") else req.domain
     findings = []
 
@@ -234,17 +317,17 @@ async def _run_scan(req: ScanRequest, state: dict):
             scan_headers["User-Agent"] = roe.userAgent
             add_log("INFO", "compliance", f"Using custom User-Agent: {roe.userAgent}", req.scan_id)
         if roe.requestHeader:
-            # Format: "X-Header-Name: value" or "X-Header: {username}"
             if ":" in roe.requestHeader:
                 key, val = roe.requestHeader.split(":", 1)
                 scan_headers[key.strip()] = val.strip()
                 add_log("INFO", "compliance", f"Using custom header: {key.strip()}", req.scan_id)
 
-    # Use program-specific rate limit (default 1 req/s for compliance)
     request_delay = max(1.0, 1.0)
 
     try:
+        # ═══════════════════════════════════════════
         # Phase 1: Reconnaissance
+        # ═══════════════════════════════════════════
         state["phase"] = "recon"
         state["progress"] = 5
         state["current_module"] = "crawler"
@@ -255,7 +338,7 @@ async def _run_scan(req: ScanRequest, state: dict):
             crawler = EndpointCrawler(http, max_depth=3)
             endpoints = await crawler.crawl(target_url)
             add_log("INFO", "recon", f"Discovered {len(endpoints)} endpoints", req.scan_id)
-            state["progress"] = 20
+            state["progress"] = 15
 
             if not endpoints:
                 add_log("WARN", "recon", "No endpoints found", req.scan_id)
@@ -265,18 +348,43 @@ async def _run_scan(req: ScanRequest, state: dict):
                 await _notify_dashboard(req, state, "complete")
                 return
 
-            # Phase 2: Scanning
+            # ─── AI Analysis: Post-Recon ───
+            add_log("INFO", "ai-analyst", "Analyzing discovered endpoints...", req.scan_id)
+            endpoint_summary = "\n".join([
+                f"- {ep.method} {ep.url} (params: {ep.params})"
+                for ep in endpoints[:50]  # Cap at 50 to fit in context
+            ])
+            recon_prompt = f"""Target: {target_url}
+Reconnaissance phase complete. Discovered {len(endpoints)} endpoints.
+
+Endpoints found:
+{endpoint_summary}
+
+Analyze these endpoints:
+1. Which ones look most interesting for vulnerability testing?
+2. Any patterns suggesting admin panels, APIs, or sensitive data?
+3. What should the scanner focus on first?"""
+
+            ai_response = await ask_ai(recon_prompt, req.scan_id)
+            add_ai_insight(req.scan_id, "recon", ai_response,
+                           _extract_recommendations(ai_response))
+            state["progress"] = 20
+            await _notify_dashboard(req, state)
+
+            # ═══════════════════════════════════════════
+            # Phase 2: Scanning (AI-guided)
+            # ═══════════════════════════════════════════
             state["phase"] = "scan"
             state["progress"] = 25
             await _notify_dashboard(req, state)
 
-            # IDOR scan
+            # ─── Module 1: IDOR scan ───
+            if state.get("status") == "cancelled":
+                return
+
             state["current_module"] = "idor"
             add_log("INFO", "idor", "Running IDOR scanner", req.scan_id)
             await _notify_dashboard(req, state)
-
-            if state.get("status") == "cancelled":
-                return
 
             idor_scanner = IDORScanner(http)
             for ep in endpoints:
@@ -310,16 +418,51 @@ async def _run_scan(req: ScanRequest, state: dict):
                         add_log("ERROR", "idor", f"IDOR found: {finding.url}", req.scan_id)
 
             state["modules_done"] = 1
-            state["progress"] = 45
+            state["progress"] = 40
             state["findings"] = findings
             await _notify_dashboard(req, state)
 
-            # Access Control scan
-            state["current_module"] = "access_control"
-            add_log("INFO", "access_control", "Running access control scanner", req.scan_id)
+            # ─── AI Analysis: Post-IDOR ───
+            if findings:
+                idor_findings_text = "\n".join([
+                    f"- [{f['severity']}] {f['title']} at {f['url']}"
+                    for f in findings if f["module"] == "idor"
+                ])
+                idor_prompt = f"""Target: {target_url}
+IDOR scan complete. Found {len([f for f in findings if f['module'] == 'idor'])} IDOR vulnerabilities.
+
+Findings:
+{idor_findings_text or "No IDOR vulnerabilities found."}
+
+Total endpoints scanned: {len(endpoints)}
+
+Based on these results:
+1. How severe are these IDOR findings?
+2. Could these be chained with other vulnerabilities?
+3. What should the access control scan focus on next?"""
+            else:
+                idor_prompt = f"""Target: {target_url}
+IDOR scan complete. No IDOR vulnerabilities found across {len(endpoints)} endpoints.
+
+This could mean:
+- Proper authorization is in place
+- IDs are non-guessable (UUIDs)
+- The application doesn't expose direct object references
+
+What should the access control scan focus on?"""
+
+            ai_response = await ask_ai(idor_prompt, req.scan_id)
+            add_ai_insight(req.scan_id, "idor-analysis", ai_response,
+                           _extract_recommendations(ai_response))
+            state["progress"] = 45
             await _notify_dashboard(req, state)
 
+            # ─── Module 2: Access Control scan ───
             if state.get("status") != "cancelled":
+                state["current_module"] = "access_control"
+                add_log("INFO", "access_control", "Running access control scanner", req.scan_id)
+                await _notify_dashboard(req, state)
+
                 ac_scanner = AccessControlScanner(http)
                 ac_findings = await ac_scanner.probe_admin_paths(target_url)
                 for f in ac_findings:
@@ -339,16 +482,41 @@ async def _run_scan(req: ScanRequest, state: dict):
                     add_log("ERROR", "access_control", f"Finding: {f.url}", req.scan_id)
 
             state["modules_done"] = 2
-            state["progress"] = 70
+            state["progress"] = 60
             state["findings"] = findings
             await _notify_dashboard(req, state)
 
-            # Info Disclosure scan
-            state["current_module"] = "info_disclosure"
-            add_log("INFO", "info_disclosure", "Running info disclosure scanner", req.scan_id)
+            # ─── AI Analysis: Post-Access Control ───
+            ac_findings_text = "\n".join([
+                f"- [{f['severity']}] {f['title']} at {f['url']}"
+                for f in findings if f["module"] == "access_control"
+            ])
+            ac_prompt = f"""Target: {target_url}
+Access control scan complete.
+
+Access Control findings:
+{ac_findings_text or "No access control issues found."}
+
+Previous IDOR findings: {len([f for f in findings if f['module'] == 'idor'])}
+Total findings so far: {len(findings)}
+
+Analyze:
+1. Any exposed admin panels or sensitive endpoints?
+2. Can these be combined with IDOR findings for an attack chain?
+3. What patterns should the info disclosure scan look for?"""
+
+            ai_response = await ask_ai(ac_prompt, req.scan_id)
+            add_ai_insight(req.scan_id, "access-control-analysis", ai_response,
+                           _extract_recommendations(ai_response))
+            state["progress"] = 65
             await _notify_dashboard(req, state)
 
+            # ─── Module 3: Info Disclosure scan ───
             if state.get("status") != "cancelled":
+                state["current_module"] = "info_disclosure"
+                add_log("INFO", "info_disclosure", "Running info disclosure scanner", req.scan_id)
+                await _notify_dashboard(req, state)
+
                 id_scanner = InfoDisclosureScanner(http)
                 id_findings = await id_scanner.probe_disclosure_endpoints(target_url)
                 for f in id_findings:
@@ -368,23 +536,71 @@ async def _run_scan(req: ScanRequest, state: dict):
                     add_log("WARN", "info_disclosure", f"Finding: {f.url}", req.scan_id)
 
             state["modules_done"] = 3
-            state["progress"] = 90
+            state["progress"] = 80
+            state["findings"] = findings
+            await _notify_dashboard(req, state)
 
-        # Phase 3: Analysis (deterministic — no AI)
+        # ═══════════════════════════════════════════
+        # Phase 3: AI Final Analysis
+        # ═══════════════════════════════════════════
         state["phase"] = "analysis"
-        state["current_module"] = "analysis"
-        add_log("INFO", "analysis", f"Analyzing {len(findings)} findings", req.scan_id)
-        state["progress"] = 95
+        state["current_module"] = "ai-analyst"
+        add_log("INFO", "ai-analyst", f"Running final AI analysis on {len(findings)} findings", req.scan_id)
+        state["progress"] = 85
+        await _notify_dashboard(req, state)
 
+        # Build comprehensive findings summary for final analysis
+        findings_by_module: dict[str, list] = {}
+        for f in findings:
+            findings_by_module.setdefault(f["module"], []).append(f)
+
+        findings_summary = ""
+        for module, module_findings in findings_by_module.items():
+            findings_summary += f"\n### {module.upper()} ({len(module_findings)} findings)\n"
+            for f in module_findings:
+                findings_summary += f"- [{f['severity']}] {f['title']} at {f.get('url', 'N/A')}\n"
+                if f.get('description'):
+                    findings_summary += f"  Description: {f['description'][:150]}\n"
+
+        if not findings:
+            findings_summary = "No vulnerabilities were found during this scan."
+
+        final_prompt = f"""Target: {target_url}
+FULL SCAN COMPLETE — Final Analysis Required
+
+Stats: {json.dumps(state['stats'])}
+Total findings: {len(findings)}
+Endpoints scanned: {len(endpoints)}
+Scan duration: {int(time.time() - state['start_time'])} seconds
+
+{findings_summary}
+
+Provide a comprehensive final analysis:
+1. EXECUTIVE SUMMARY: Overall security posture of the target
+2. CRITICAL CHAINS: Any attack chains that combine multiple findings
+3. BLIND SPOTS: What the scanner might have missed
+4. RECOMMENDATIONS: Top 3 actionable next steps for manual testing
+5. RISK RATING: Overall risk level (Critical/High/Medium/Low)"""
+
+        ai_response = await ask_ai(final_prompt, req.scan_id)
+        add_ai_insight(req.scan_id, "final-analysis", ai_response,
+                       _extract_recommendations(ai_response))
+        state["progress"] = 95
+        await _notify_dashboard(req, state)
+
+        # ═══════════════════════════════════════════
         # Phase 4: Report
+        # ═══════════════════════════════════════════
         state["phase"] = "report"
         state["current_module"] = "report"
         state["progress"] = 100
         state["status"] = "complete"
         state["findings"] = findings
-        add_log("INFO", "report", f"Scan complete: {len(findings)} findings", req.scan_id)
+        # Attach AI insights to scan state for persistence
+        state["ai_insights"] = [i for i in ai_insights if i.get("scanId") == req.scan_id]
+        add_log("INFO", "report", f"Scan complete: {len(findings)} findings with AI analysis", req.scan_id)
 
-        # Save report to disk
+        # Save report to disk (now includes AI insights)
         reports_dir = Path("./reports")
         reports_dir.mkdir(exist_ok=True)
         report = {
@@ -395,6 +611,7 @@ async def _run_scan(req: ScanRequest, state: dict):
             "stats": state["stats"],
             "total_findings": len(findings),
             "duration": int(time.time() - state["start_time"]),
+            "ai_insights": state.get("ai_insights", []),
         }
         report_path = reports_dir / f"{req.domain.replace('.', '_')}_{req.scan_id[:8]}.json"
         report_path.write_text(json.dumps(report, indent=2, default=str))
@@ -407,6 +624,22 @@ async def _run_scan(req: ScanRequest, state: dict):
         add_log("ERROR", "scan", f"Scan failed: {e}", req.scan_id)
         await _notify_dashboard(req, state, "error")
         logger.exception(f"Scan error: {e}")
+
+
+def _extract_recommendations(ai_text: str) -> list[str]:
+    """Extract actionable recommendations from AI analysis text."""
+    recommendations = []
+    lines = ai_text.split("\n")
+    for line in lines:
+        line = line.strip()
+        if line.startswith("NEXT_SCAN:"):
+            recommendations.append(line[10:].strip())
+        elif line.startswith("PRIORITY_TARGETS:"):
+            targets = line[17:].strip().split(",")
+            recommendations.extend([t.strip() for t in targets if t.strip()])
+        elif line.startswith("- ") and any(kw in line.lower() for kw in ["scan", "test", "check", "probe", "investigate"]):
+            recommendations.append(line[2:].strip())
+    return recommendations[:10]  # Cap at 10
 
 
 if __name__ == "__main__":

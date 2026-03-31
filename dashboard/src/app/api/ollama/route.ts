@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: model || "phi",
+        model: model || "qwen2:0.5b",
         messages: ollamaMessages,
         stream: true,
       }),

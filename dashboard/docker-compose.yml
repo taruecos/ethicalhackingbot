@@ -26,16 +26,6 @@ services:
         condition: service_healthy
     restart: "no"
 
-  scanner:
-    build:
-      context: ..
-      dockerfile: Dockerfile.scanner
-    restart: unless-stopped
-    environment:
-      INTIGRITI_API_TOKEN: ${INTIGRITI_API_TOKEN:-}
-      SCAN_SERVICE_PORT: "8000"
-    volumes:
-      - scan-reports:/app/reports
 
   dashboard:
     build:
@@ -58,8 +48,6 @@ services:
         condition: service_healthy
       migrator:
         condition: service_completed_successfully
-      scanner:
-        condition: service_started
       ollama:
         condition: service_healthy
 
@@ -74,7 +62,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 1G
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 10s
@@ -83,5 +71,4 @@ services:
 
 volumes:
   pgdata:
-  scan-reports:
   ollama-data:

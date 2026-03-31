@@ -36,7 +36,7 @@ export default function TerminalPage() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [ollamaStatus, setOllamaStatus] = useState<"checking" | "online" | "offline">("checking");
   const [models, setModels] = useState<OllamaModel[]>([]);
-  const [selectedModel, setSelectedModel] = useState("phi");
+  const [selectedModel, setSelectedModel] = useState("qwen2:0.5b");
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);

@@ -31,6 +31,15 @@ interface QueuedScan {
   createdAt: string;
 }
 
+interface AIInsight {
+  id: string;
+  timestamp: string;
+  scanId: string;
+  phase: string;
+  analysis: string;
+  recommendations: string[];
+}
+
 interface ScanProgress {
   id: string;
   target: string;
@@ -44,6 +53,7 @@ interface ScanProgress {
   elapsed: number;
   findingsCount: number;
   stats: Record<string, number>;
+  aiInsights?: AIInsight[];
 }
 
 interface SystemMetrics {
@@ -87,6 +97,7 @@ export default function LiveMonitorPage() {
   const [startingId, setStartingId] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [aiInsights, setAiInsights] = useState<AIInsight[]>([]);
   const [botOnline, setBotOnline] = useState(false);
   const [loading, setLoading] = useState(true);
   const [paused, setPaused] = useState(false);
@@ -94,6 +105,7 @@ export default function LiveMonitorPage() {
   const [logFilter, setLogFilter] = useState<string>("");
   const logsEndRef = useRef<HTMLDivElement>(null);
   const logsContainerRef = useRef<HTMLDivElement>(null);
+  const aiPanelRef = useRef<HTMLDivElement>(null);
 
   const fetchStatus = useCallback(async () => {
     if (paused) return;
@@ -111,6 +123,13 @@ export default function LiveMonitorPage() {
             const newLogs = data.logs.filter((l: LogEntry) => !existingIds.has(l.id));
             const combined = [...prev, ...newLogs];
             return combined.slice(-500);
+          });
+        }
+        if (data.aiInsights && data.aiInsights.length > 0) {
+          setAiInsights((prev) => {
+            const existingIds = new Set(prev.map((i) => i.id));
+            const newInsights = data.aiInsights.filter((i: AIInsight) => !existingIds.has(i.id));
+            return [...prev, ...newInsights].slice(-100);
           });
         }
       } else {
@@ -423,6 +442,67 @@ export default function LiveMonitorPage() {
           <Activity className="w-8 h-8 text-[var(--dim)] mx-auto mb-3" />
           <p className="text-sm text-[var(--dim)]">No scans in queue</p>
           <p className="text-xs text-[var(--dim)] mt-1">Add a scan from Programs to see it here</p>
+        </div>
+      )}
+
+      {/* AI Insights — Real-time analysis */}
+      {aiInsights.length > 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border)]">
+            <Zap className="w-4 h-4 text-[var(--purple)]" />
+            <h3 className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold">
+              AI Analysis
+            </h3>
+            <span className="text-[10px] text-[var(--dim)]">{aiInsights.length} insights</span>
+          </div>
+          <div
+            ref={aiPanelRef}
+            className="max-h-[400px] overflow-y-auto p-3 space-y-3"
+          >
+            {aiInsights.map((insight) => (
+              <div
+                key={insight.id}
+                className="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3"
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                    insight.phase === "final-analysis"
+                      ? "bg-[var(--purple)]/15 text-[var(--purple)]"
+                      : insight.phase === "recon"
+                      ? "bg-[var(--blue)]/15 text-[var(--blue)]"
+                      : insight.phase.includes("idor")
+                      ? "bg-[var(--red)]/15 text-[var(--red)]"
+                      : insight.phase.includes("access")
+                      ? "bg-[var(--orange)]/15 text-[var(--orange)]"
+                      : "bg-[var(--accent-dim)] text-[var(--accent)]"
+                  }`}>
+                    {insight.phase}
+                  </span>
+                  <span className="text-[10px] text-[var(--dim)]">
+                    {new Date(insight.timestamp).toLocaleTimeString()}
+                  </span>
+                </div>
+                <p className="text-xs text-[var(--text)] whitespace-pre-wrap leading-relaxed">
+                  {insight.analysis}
+                </p>
+                {insight.recommendations.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-[var(--border)]">
+                    <p className="text-[10px] text-[var(--dim)] font-semibold uppercase tracking-wider mb-1">
+                      Recommendations
+                    </p>
+                    <ul className="space-y-1">
+                      {insight.recommendations.map((rec: string, i: number) => (
+                        <li key={i} className="text-[11px] text-[var(--accent)] flex items-start gap-1.5">
+                          <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                          <span>{rec}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
