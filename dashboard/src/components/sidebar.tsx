@@ -12,6 +12,7 @@ import {
   BarChart3,
   LogOut,
   Bug,
+  Terminal,
   ChevronsLeft,
   ChevronsRight,
   X,
@@ -26,6 +27,7 @@ const NAV = [
   { href: "/programs", label: "Programs", icon: Globe },
   { href: "/reports", label: "Reports", icon: FileText },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/terminal", label: "AI Terminal", icon: Terminal },
 ] as const;
 
 export function Sidebar() {
