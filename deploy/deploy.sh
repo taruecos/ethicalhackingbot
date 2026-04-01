@@ -21,10 +21,11 @@ git pull origin "$(git rev-parse --abbrev-ref HEAD)" 2>&1 | tee -a "$LOG_FILE"
 
 log "Building and restarting containers..."
 cd "$COMPOSE_DIR"
-docker compose build --no-cache 2>&1 | tee -a "$LOG_FILE"
-docker compose up -d 2>&1 | tee -a "$LOG_FILE"
+docker compose --env-file .env.docker build --no-cache 2>&1 | tee -a "$LOG_FILE"
+docker compose --env-file .env.docker up -d 2>&1 | tee -a "$LOG_FILE"
 
-log "Cleanup old images..."
-docker image prune -f 2>&1 | tee -a "$LOG_FILE"
+log "Cleanup old images and build cache..."
+docker image prune -af 2>&1 | tee -a "$LOG_FILE"
+docker builder prune -af 2>&1 | tee -a "$LOG_FILE"
 
 log "=== Deploy complete ==="

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   Target,
@@ -11,7 +11,23 @@ import {
   Crosshair,
   Globe,
   Gauge,
+  ChevronDown,
 } from "lucide-react";
+
+interface ProgramOption {
+  id: string;
+  name: string;
+  slug: string;
+  scope: Array<{ endpoint?: string; type?: string; tier?: string }>;
+  compliance: {
+    userAgent?: string | null;
+    requestHeader?: string | null;
+    safeHarbour?: boolean;
+    automatedToolingStatus?: string;
+  };
+  maxBounty?: number | null;
+  currency?: string;
+}
 
 export default function NewScanPage() {
   const router = useRouter();
@@ -28,6 +44,46 @@ export default function NewScanPage() {
   const [customHeader, setCustomHeader] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [programs, setPrograms] = useState<ProgramOption[]>([]);
+  const [selectedProgramId, setSelectedProgramId] = useState("");
+  const [loadingPrograms, setLoadingPrograms] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/programs?compliant=true")
+      .then((r) => r.json())
+      .then((data) => setPrograms(data.programs || []))
+      .catch(() => setPrograms([]))
+      .finally(() => setLoadingPrograms(false));
+  }, []);
+
+  function selectProgram(programId: string) {
+    setSelectedProgramId(programId);
+    if (!programId) return;
+
+    const program = programs.find((p) => p.id === programId);
+    if (!program) return;
+
+    // Pre-fill scope from program domains
+    const scopeFromProgram = (program.scope || [])
+      .map((d) => (d.endpoint as string) || "")
+      .filter(Boolean);
+    if (scopeFromProgram.length > 0) {
+      setScopeEntries(scopeFromProgram);
+      // Set target to first domain
+      const firstDomain = scopeFromProgram[0].replace(/^\*\./, "");
+      setTarget(firstDomain);
+    }
+
+    // Pre-fill User-Agent from compliance
+    if (program.compliance?.userAgent) {
+      setUserAgent(program.compliance.userAgent);
+    }
+
+    // Pre-fill custom header from compliance
+    if (program.compliance?.requestHeader) {
+      setCustomHeader(program.compliance.requestHeader);
+    }
+  }
 
   function addScopeEntry() {
     setScopeEntries([...scopeEntries, ""]);
@@ -90,6 +146,7 @@ export default function NewScanPage() {
             requestHeader: customHeader.trim() || null,
             safeHarbour: true,
           },
+          programId: selectedProgramId || undefined,
         }),
       });
 
@@ -119,6 +176,36 @@ export default function NewScanPage() {
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-5">
+        {/* Intigriti Program Selector */}
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Shield className="w-4 h-4 text-[var(--green)]" />
+            <h2 className="text-xs font-bold uppercase tracking-wider text-[var(--dim)]">Intigriti Program</h2>
+          </div>
+          <div className="relative">
+            <select
+              value={selectedProgramId}
+              onChange={(e) => selectProgram(e.target.value)}
+              disabled={loadingPrograms}
+              className="w-full px-3 py-2.5 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-sm focus:border-[var(--accent)] focus:outline-none transition-colors appearance-none pr-8"
+            >
+              <option value="">
+                {loadingPrograms ? "Loading programs..." : "Manual configuration"}
+              </option>
+              {programs.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.maxBounty ? ` (up to ${p.maxBounty} ${p.currency || "EUR"})` : ""}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="w-4 h-4 text-[var(--dim)] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          </div>
+          <p className="text-[10px] text-[var(--dim)]">
+            Select a program to auto-fill scope, User-Agent, and rules of engagement
+          </p>
+        </div>
+
         {/* Target */}
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 space-y-3">
           <div className="flex items-center gap-2 mb-2">
