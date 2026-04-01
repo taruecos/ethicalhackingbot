@@ -25,14 +25,41 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   try {
     const compliance = scan.program?.compliance as Record<string, unknown> | null;
-    const programScope = scan.program?.scope as string[] | null;
-    const configScope = config.scope as string[] | undefined;
     const configRoe = config.rulesOfEngagement as Record<string, unknown> | undefined;
 
+    // Normalize scope from any format (string[], object[], JSON string)
+    function normalizeScope(raw: unknown): string[] {
+      if (!raw) return [];
+      if (typeof raw === "string") {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return normalizeScope(parsed);
+          return [raw].filter(Boolean);
+        } catch {
+          return [raw].filter(Boolean);
+        }
+      }
+      if (!Array.isArray(raw)) return [];
+      return raw
+        .map((entry: unknown) => {
+          if (typeof entry === "string") return entry.trim();
+          if (entry && typeof entry === "object") {
+            const obj = entry as Record<string, unknown>;
+            const val = (obj.endpoint || obj.domain || obj.url || obj.value || obj.host || "") as string;
+            return typeof val === "string" ? val.trim() : "";
+          }
+          return "";
+        })
+        .filter(Boolean);
+    }
+
+    const programScope = normalizeScope(scan.program?.scope);
+    const configScope = normalizeScope(config.scope);
+
     // Build scope: program scope > config scope > default to target domain
-    const scope = programScope && programScope.length > 0
+    const scope = programScope.length > 0
       ? programScope
-      : configScope && configScope.length > 0
+      : configScope.length > 0
         ? configScope
         : [scan.target, `*.${scan.target}`];
 

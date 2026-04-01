@@ -197,12 +197,14 @@ export default function LiveMonitorPage() {
     setComplianceLoading(scanId);
     try {
       const res = await fetch(`/api/scans/${scanId}/compliance`);
+      const data = await res.json();
       if (res.ok) {
-        const data: ComplianceData = await res.json();
-        setComplianceModal(data);
+        setComplianceModal(data as ComplianceData);
+      } else {
+        console.error("[Compliance]", data.error, data.details);
       }
-    } catch {
-      // silent
+    } catch (err) {
+      console.error("[Compliance] fetch failed:", err);
     } finally {
       setComplianceLoading(null);
     }

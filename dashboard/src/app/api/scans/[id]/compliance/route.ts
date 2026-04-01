@@ -32,21 +32,52 @@ const MODULE_DESCRIPTIONS: Record<string, string> = {
 };
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  try {
+    const { id } = await params;
 
-  const scan = await prisma.scan.findUnique({
-    where: { id },
-    include: { program: true },
-  });
+    const scan = await prisma.scan.findUnique({
+      where: { id },
+      include: { program: true },
+    });
 
-  if (!scan) {
-    return NextResponse.json({ error: "Scan not found" }, { status: 404 });
+    if (!scan) {
+      return NextResponse.json({ error: "Scan not found" }, { status: 404 });
+    }
+
+  const config = (scan.config as Record<string, unknown>) || {};
+  const compliance = scan.program?.compliance as Record<string, unknown> | null;
+  const rawProgramScope = scan.program?.scope as unknown;
+  const rawConfigScope = config.scope as unknown;
+
+  // Normalize scope entries — handles string[], object[], JSON strings, mixed formats
+  function normalizeScope(raw: unknown): string[] {
+    if (!raw) return [];
+    // Handle JSON string
+    if (typeof raw === "string") {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return normalizeScope(parsed);
+        return [raw].filter(Boolean);
+      } catch {
+        return [raw].filter(Boolean);
+      }
+    }
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((entry) => {
+        if (typeof entry === "string") return entry.trim();
+        if (entry && typeof entry === "object") {
+          const obj = entry as Record<string, unknown>;
+          const val = (obj.endpoint || obj.domain || obj.url || obj.value || obj.host || "") as string;
+          return typeof val === "string" ? val.trim() : "";
+        }
+        return "";
+      })
+      .filter(Boolean);
   }
 
-  const config = scan.config as Record<string, unknown>;
-  const compliance = scan.program?.compliance as Record<string, unknown> | null;
-  const programScope = scan.program?.scope as string[] | null;
-  const configScope = config.scope as string[] | undefined;
+  const programScope = normalizeScope(rawProgramScope);
+  const configScope = normalizeScope(rawConfigScope);
   const configRoe = config.rulesOfEngagement as Record<string, unknown> | undefined;
 
   const risks: string[] = [];
@@ -73,10 +104,24 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     risks.push("CRITICAL: Empty scope — all URLs will be blocked (fail-closed)");
   }
 
+  // Escape regex special chars except * (which we convert to .*)
+  function scopeToRegex(entry: string): RegExp | null {
+    try {
+      // Strip protocol if present
+      const clean = entry.replace(/^https?:\/\//, "").replace(/\/$/, "");
+      // Escape all regex special chars, then convert \* back to .*
+      const escaped = clean.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, ".*");
+      return new RegExp(`^${escaped}$`, "i");
+    } catch {
+      return null;
+    }
+  }
+
   // Check if target is covered by scope
+  const cleanTarget = scan.target.replace(/^https?:\/\//, "").replace(/\/$/, "");
   const targetCovered = scopeEntries.some((entry) => {
-    const pattern = entry.replace(/\*/g, ".*");
-    return new RegExp(`^${pattern}$`, "i").test(scan.target);
+    const regex = scopeToRegex(entry);
+    return regex ? regex.test(cleanTarget) : false;
   });
   if (!targetCovered) {
     risks.push("Target domain is NOT covered by scope entries — scan will block its own target");
@@ -146,5 +191,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     compliant,
   };
 
-  return NextResponse.json(result);
+    return NextResponse.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return NextResponse.json(
+      { error: "Failed to check compliance", details: message },
+      { status: 500 }
+    );
+  }
 }
