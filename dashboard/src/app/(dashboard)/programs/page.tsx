@@ -4,7 +4,6 @@ import { useEffect, useState, useCallback } from "react";
 import {
   Loader2,
   Globe,
-  RefreshCw,
   ExternalLink,
   Search,
   DollarSign,
@@ -141,31 +140,11 @@ type TabId = (typeof TAB_LIST)[number]["id"];
 
 export default function ProgramsPage() {
   const [activeTab, setActiveTab] = useState<TabId>("programs");
-  const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<string | null>(null);
-
-  async function syncIntigriti() {
-    setSyncing(true);
-    setSyncResult(null);
-    try {
-      const res = await fetch("/api/programs/sync", { method: "POST" });
-      const data = await res.json();
-      if (data.ok) {
-        setSyncResult(`Synced ${data.synced} programs (${data.compliant} compliant)`);
-      } else {
-        setSyncResult(`Error: ${data.error}`);
-      }
-    } catch {
-      setSyncResult("Sync failed");
-    } finally {
-      setSyncing(false);
-    }
-  }
 
   return (
     <div className="space-y-4">
-      {/* Tab bar + sync */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      {/* Tab bar */}
+      <div className="flex flex-wrap items-center gap-2">
         <div className="flex gap-1 bg-[var(--surface)] border border-[var(--border)] rounded-lg p-1">
           {TAB_LIST.map((tab) => {
             const Icon = tab.icon;
@@ -185,24 +164,6 @@ export default function ProgramsPage() {
               </button>
             );
           })}
-        </div>
-
-        <div className="flex items-center gap-2">
-          {syncResult && (
-            <span className="text-[10px] text-[var(--dim)]">{syncResult}</span>
-          )}
-          <button
-            onClick={syncIntigriti}
-            disabled={syncing}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--accent)] text-black text-xs font-bold hover:opacity-90 disabled:opacity-40"
-          >
-            {syncing ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="w-3.5 h-3.5" />
-            )}
-            Sync Intigriti
-          </button>
         </div>
       </div>
 
@@ -273,9 +234,18 @@ function DBProgramsTab() {
     }
   }, [complianceFilter, search, bountyFilter, industryFilter, confidentialityFilter, safeHarbourFilter, sortBy]);
 
+  const [syncing, setSyncing] = useState(true);
+
+  // Auto-sync from Intigriti on every page load
   useEffect(() => {
-    fetchPrograms();
-  }, [fetchPrograms]);
+    let cancelled = false;
+    setSyncing(true);
+    fetch("/api/programs/sync", { method: "POST" })
+      .then(() => { if (!cancelled) fetchPrograms(); })
+      .catch(() => { if (!cancelled) fetchPrograms(); })
+      .finally(() => { if (!cancelled) setSyncing(false); });
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function launchScan(program: DBProgram) {
     setScanning(program.id);
@@ -471,12 +441,17 @@ function DBProgramsTab() {
       </div>
 
       {/* Programs list */}
-      {loading ? (
+      {syncing ? (
+        <div className="flex flex-col items-center justify-center py-16 gap-2">
+          <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" />
+          <span className="text-xs text-[var(--dim)]">Syncing from Intigriti...</span>
+        </div>
+      ) : loading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-5 h-5 animate-spin text-[var(--accent)]" />
         </div>
       ) : programs.length === 0 ? (
-        <EmptyState message="No programs found" sub="Sync Intigriti to fetch programs, or adjust filters" />
+        <EmptyState message="No programs found" sub="Adjust filters or wait for sync to complete" />
       ) : (
         <div className="space-y-3">
           {programs.map((program) => (
