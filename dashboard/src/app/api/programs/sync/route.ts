@@ -19,81 +19,90 @@ export async function POST() {
       offset += limit;
     }
 
-    // For each program, fetch detail (for compliance/scope) and upsert to DB
+    // Fetch details in parallel batches of 5 and upsert to DB
     let synced = 0;
     let compliant = 0;
+    const BATCH_SIZE = 5;
 
-    for (const raw of allRaw) {
-      const programId = raw.id as string;
-      if (!programId) continue;
+    for (let i = 0; i < allRaw.length; i += BATCH_SIZE) {
+      const batch = allRaw.slice(i, i + BATCH_SIZE);
 
-      let detail: Record<string, unknown>;
-      try {
-        detail = await getProgramDetail(programId);
-      } catch {
-        // If detail fetch fails, use the list data
-        detail = raw;
-      }
+      const detailResults = await Promise.allSettled(
+        batch.map(async (raw) => {
+          const programId = raw.id as string;
+          if (!programId) return { raw, detail: raw };
+          try {
+            const detail = await getProgramDetail(programId);
+            return { raw, detail };
+          } catch {
+            return { raw, detail: raw };
+          }
+        })
+      );
 
-      // Merge list data into detail — the detail endpoint omits some fields
-      // (e.g. minBounty, maxBounty) that are only available in the list response
-      const merged = { ...detail };
-      if (merged.minBounty === undefined && raw.minBounty !== undefined) {
-        merged.minBounty = raw.minBounty;
-      }
-      if (merged.maxBounty === undefined && raw.maxBounty !== undefined) {
-        merged.maxBounty = raw.maxBounty;
-      }
+      for (const result of detailResults) {
+        if (result.status !== "fulfilled") continue;
+        const { raw, detail } = result.value;
 
-      const normalized = normalizeProgram(merged);
-      const compliance = normalized.compliance as Record<string, unknown>;
+        // Merge list data into detail — the detail endpoint omits some fields
+        const merged = { ...detail };
+        if (merged.minBounty === undefined && raw.minBounty !== undefined) {
+          merged.minBounty = raw.minBounty;
+        }
+        if (merged.maxBounty === undefined && raw.maxBounty !== undefined) {
+          merged.maxBounty = raw.maxBounty;
+        }
 
-      if (compliance?.automatedToolingStatus === "allowed") {
-        compliant++;
-      }
+        const normalized = normalizeProgram(merged);
+        const compliance = normalized.compliance as Record<string, unknown>;
 
-      await prisma.program.upsert({
-        where: {
-          platform_slug: {
-            platform: "INTIGRITI",
-            slug: normalized.slug,
+        if (compliance?.automatedToolingStatus === "allowed") {
+          compliant++;
+        }
+
+        await prisma.program.upsert({
+          where: {
+            platform_slug: {
+              platform: "INTIGRITI",
+              slug: normalized.slug,
+            },
           },
-        },
-        create: {
-          platform: "INTIGRITI",
-          name: normalized.name,
-          slug: normalized.slug,
-          url: normalized.url,
-          intigritiId: normalized.intigritiId,
-          scope: normalized.scope as Prisma.InputJsonValue,
-          compliance: normalized.compliance as Prisma.InputJsonValue,
-          minBounty: normalized.minBounty ?? null,
-          maxBounty: normalized.maxBounty ?? null,
-          currency: normalized.currency,
-          industry: normalized.industry,
-          programType: normalized.programType,
-          confidentiality: normalized.confidentiality,
-          active: normalized.active,
-          syncedAt: new Date(),
-        },
-        update: {
-          name: normalized.name,
-          url: normalized.url,
-          intigritiId: normalized.intigritiId,
-          scope: normalized.scope as Prisma.InputJsonValue,
-          compliance: normalized.compliance as Prisma.InputJsonValue,
-          minBounty: normalized.minBounty ?? null,
-          maxBounty: normalized.maxBounty ?? null,
-          currency: normalized.currency,
-          industry: normalized.industry,
-          programType: normalized.programType,
-          confidentiality: normalized.confidentiality,
-          active: normalized.active,
-          syncedAt: new Date(),
-        },
-      });
+          create: {
+            platform: "INTIGRITI",
+            name: normalized.name,
+            slug: normalized.slug,
+            url: normalized.url,
+            intigritiId: normalized.intigritiId,
+            scope: normalized.scope as Prisma.InputJsonValue,
+            compliance: normalized.compliance as Prisma.InputJsonValue,
+            minBounty: normalized.minBounty ?? null,
+            maxBounty: normalized.maxBounty ?? null,
+            currency: normalized.currency,
+            industry: normalized.industry,
+            programType: normalized.programType,
+            confidentiality: normalized.confidentiality,
+            active: normalized.active,
+            syncedAt: new Date(),
+          },
+          update: {
+            name: normalized.name,
+            url: normalized.url,
+            intigritiId: normalized.intigritiId,
+            scope: normalized.scope as Prisma.InputJsonValue,
+            compliance: normalized.compliance as Prisma.InputJsonValue,
+            minBounty: normalized.minBounty ?? null,
+            maxBounty: normalized.maxBounty ?? null,
+            currency: normalized.currency,
+            industry: normalized.industry,
+            programType: normalized.programType,
+            confidentiality: normalized.confidentiality,
+            active: normalized.active,
+            syncedAt: new Date(),
+          },
+        });
 
-      synced++;
+        synced++;
+      }
     }
 
     return NextResponse.json({

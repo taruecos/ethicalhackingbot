@@ -234,16 +234,21 @@ function DBProgramsTab() {
     }
   }, [complianceFilter, search, bountyFilter, industryFilter, confidentialityFilter, safeHarbourFilter, sortBy]);
 
-  const [syncing, setSyncing] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
-  // Auto-sync from Intigriti on every page load
+  // Load existing programs from DB immediately, then sync in background
   useEffect(() => {
     let cancelled = false;
-    setSyncing(true);
-    fetch("/api/programs/sync", { method: "POST" })
-      .then(() => { if (!cancelled) fetchPrograms(); })
-      .catch(() => { if (!cancelled) fetchPrograms(); })
-      .finally(() => { if (!cancelled) setSyncing(false); });
+    // First: show what we already have in DB
+    fetchPrograms().then(() => {
+      if (cancelled) return;
+      // Then: sync from Intigriti in background
+      setSyncing(true);
+      fetch("/api/programs/sync", { method: "POST" })
+        .then(() => { if (!cancelled) fetchPrograms(); })
+        .catch(() => {})
+        .finally(() => { if (!cancelled) setSyncing(false); });
+    });
     return () => { cancelled = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
