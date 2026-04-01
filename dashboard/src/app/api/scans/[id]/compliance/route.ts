@@ -1,11 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
+interface ScopeEntry {
+  endpoint: string;
+  tier: string;
+  type: string;
+  description: string;
+}
+
 interface ComplianceCheck {
   target: string;
   programName: string | null;
+  programPlatform: string | null;
   scope: {
     entries: string[];
+    tiers: Record<string, ScopeEntry[]>;
     source: "program" | "config" | "default";
     warnings: string[];
   };
@@ -14,6 +23,9 @@ interface ComplianceCheck {
     requestHeader: string | null;
     safeHarbour: boolean;
     rateLimit: number;
+    automatedTooling: string | null;
+    intigritiMe: boolean;
+    description: string;
     source: "program" | "config" | "default";
     warnings: string[];
   };
@@ -23,6 +35,11 @@ interface ComplianceCheck {
   };
   risks: string[];
   compliant: boolean;
+  bounty: {
+    min: number | null;
+    max: number | null;
+    currency: string;
+  } | null;
 }
 
 const MODULE_DESCRIPTIONS: Record<string, string> = {
@@ -49,34 +66,50 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   const rawProgramScope = scan.program?.scope as unknown;
   const rawConfigScope = config.scope as unknown;
 
-  // Normalize scope entries — handles string[], object[], JSON strings, mixed formats
-  function normalizeScope(raw: unknown): string[] {
-    if (!raw) return [];
+  // Parse scope entries with tier info
+  function parseScopeWithTiers(raw: unknown): { flat: string[]; tiers: Record<string, ScopeEntry[]> } {
+    const flat: string[] = [];
+    const tiers: Record<string, ScopeEntry[]> = {};
+
+    if (!raw) return { flat, tiers };
+
     // Handle JSON string
+    let parsed = raw;
     if (typeof raw === "string") {
-      try {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return normalizeScope(parsed);
-        return [raw].filter(Boolean);
-      } catch {
-        return [raw].filter(Boolean);
+      try { parsed = JSON.parse(raw); } catch { return { flat: [raw], tiers: { "default": [{ endpoint: raw, tier: "default", type: "url", description: "" }] } }; }
+    }
+
+    if (!Array.isArray(parsed)) return { flat, tiers };
+
+    for (const entry of parsed) {
+      if (typeof entry === "string") {
+        flat.push(entry.trim());
+        const tierKey = "default";
+        if (!tiers[tierKey]) tiers[tierKey] = [];
+        tiers[tierKey].push({ endpoint: entry.trim(), tier: tierKey, type: "url", description: "" });
+      } else if (entry && typeof entry === "object") {
+        const obj = entry as Record<string, unknown>;
+        const endpoint = ((obj.endpoint || obj.domain || obj.url || obj.value || obj.host || "") as string).trim();
+        const tier = ((obj.tier as string) || "default").trim();
+        const type = ((obj.type as string) || "url").trim();
+        const description = ((obj.description as string) || "").trim();
+        if (endpoint) {
+          flat.push(endpoint);
+          if (!tiers[tier]) tiers[tier] = [];
+          tiers[tier].push({ endpoint, tier, type, description });
+        }
       }
     }
-    if (!Array.isArray(raw)) return [];
-    return raw
-      .map((entry) => {
-        if (typeof entry === "string") return entry.trim();
-        if (entry && typeof entry === "object") {
-          const obj = entry as Record<string, unknown>;
-          const val = (obj.endpoint || obj.domain || obj.url || obj.value || obj.host || "") as string;
-          return typeof val === "string" ? val.trim() : "";
-        }
-        return "";
-      })
-      .filter(Boolean);
+
+    return { flat, tiers };
   }
 
-  const programScope = normalizeScope(rawProgramScope);
+  // Normalize flat scope entries (legacy fallback)
+  function normalizeScope(raw: unknown): string[] {
+    return parseScopeWithTiers(raw).flat;
+  }
+
+  const programScopeData = parseScopeWithTiers(rawProgramScope);
   const configScope = normalizeScope(rawConfigScope);
   const configRoe = config.rulesOfEngagement as Record<string, unknown> | undefined;
 
@@ -86,16 +119,20 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
   // Determine scope source and entries
   let scopeEntries: string[];
+  let scopeTiers: Record<string, ScopeEntry[]>;
   let scopeSource: "program" | "config" | "default";
 
-  if (programScope && programScope.length > 0) {
-    scopeEntries = programScope;
+  if (programScopeData.flat.length > 0) {
+    scopeEntries = programScopeData.flat;
+    scopeTiers = programScopeData.tiers;
     scopeSource = "program";
-  } else if (configScope && configScope.length > 0) {
+  } else if (configScope.length > 0) {
     scopeEntries = configScope;
+    scopeTiers = { "default": configScope.map(e => ({ endpoint: e, tier: "default", type: "url", description: "" })) };
     scopeSource = "config";
   } else {
     scopeEntries = [scan.target, `*.${scan.target}`];
+    scopeTiers = { "default": scopeEntries.map(e => ({ endpoint: e, tier: "default", type: "url", description: "" })) };
     scopeSource = "default";
     scopeWarnings.push("No explicit scope defined — using target domain + wildcard as default");
   }
@@ -107,9 +144,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   // Escape regex special chars except * (which we convert to .*)
   function scopeToRegex(entry: string): RegExp | null {
     try {
-      // Strip protocol if present
       const clean = entry.replace(/^https?:\/\//, "").replace(/\/$/, "");
-      // Escape all regex special chars, then convert \* back to .*
       const escaped = clean.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, ".*");
       return new RegExp(`^${escaped}$`, "i");
     } catch {
@@ -131,6 +166,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   let userAgent: string | null = null;
   let requestHeader: string | null = null;
   let safeHarbour = false;
+  let automatedTooling: string | null = null;
+  let intigritiMe = false;
+  let roeDescription = "";
   let roeSource: "program" | "config" | "default";
   const rateLimit = (config.rateLimit as number) || 30;
 
@@ -138,6 +176,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     userAgent = (compliance.userAgent as string) || null;
     requestHeader = (compliance.requestHeader as string) || null;
     safeHarbour = !!(compliance.safeHarbour);
+    automatedTooling = (compliance.automatedToolingStatus as string) || null;
+    intigritiMe = !!(compliance.intigritiMe);
+    roeDescription = (compliance.description as string) || "";
     roeSource = "program";
   } else if (configRoe) {
     userAgent = (configRoe.userAgent as string) || null;
@@ -158,6 +199,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   if (rateLimit > 60) {
     risks.push(`High rate limit (${rateLimit} req/min) — may trigger WAF or violate program rules`);
   }
+  if (automatedTooling === "not_allowed") {
+    risks.push("CRITICAL: Automated tooling is NOT allowed by this program");
+  }
 
   // Modules
   const enabledModules = (config.modules as string[]) || [];
@@ -167,11 +211,20 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
   const compliant = risks.filter((r) => r.startsWith("CRITICAL")).length === 0;
 
+  // Bounty info
+  const bounty = scan.program ? {
+    min: (scan.program.minBounty as number) || null,
+    max: (scan.program.maxBounty as number) || null,
+    currency: (scan.program.currency as string) || "EUR",
+  } : null;
+
   const result: ComplianceCheck = {
     target: scan.target,
     programName: scan.program?.name || null,
+    programPlatform: scan.program?.platform || null,
     scope: {
       entries: scopeEntries,
+      tiers: scopeTiers,
       source: scopeSource,
       warnings: scopeWarnings,
     },
@@ -180,6 +233,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       requestHeader,
       safeHarbour,
       rateLimit,
+      automatedTooling,
+      intigritiMe,
+      description: roeDescription,
       source: roeSource,
       warnings: roeWarnings,
     },
@@ -189,6 +245,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     },
     risks,
     compliant,
+    bounty,
   };
 
     return NextResponse.json(result);

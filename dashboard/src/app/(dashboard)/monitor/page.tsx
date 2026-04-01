@@ -92,11 +92,20 @@ const PHASE_STEPS = [
   { id: "report", label: "Report" },
 ];
 
+interface ScopeEntry {
+  endpoint: string;
+  tier: string;
+  type: string;
+  description: string;
+}
+
 interface ComplianceData {
   target: string;
   programName: string | null;
+  programPlatform: string | null;
   scope: {
     entries: string[];
+    tiers: Record<string, ScopeEntry[]>;
     source: "program" | "config" | "default";
     warnings: string[];
   };
@@ -105,6 +114,9 @@ interface ComplianceData {
     requestHeader: string | null;
     safeHarbour: boolean;
     rateLimit: number;
+    automatedTooling: string | null;
+    intigritiMe: boolean;
+    description: string;
     source: "program" | "config" | "default";
     warnings: string[];
   };
@@ -114,6 +126,11 @@ interface ComplianceData {
   };
   risks: string[];
   compliant: boolean;
+  bounty: {
+    min: number | null;
+    max: number | null;
+    currency: string;
+  } | null;
 }
 
 export default function LiveMonitorPage() {
@@ -561,7 +578,36 @@ export default function LiveMonitorPage() {
                 </div>
               )}
 
-              {/* Scope */}
+              {/* Program & Platform */}
+              {(complianceModal.programName || complianceModal.programPlatform) && (
+                <div className="flex items-center gap-2 text-xs">
+                  {complianceModal.programPlatform && (
+                    <span className="px-2 py-1 rounded-lg bg-[var(--purple)]/15 text-[var(--purple)] font-bold uppercase text-[10px]">
+                      {complianceModal.programPlatform}
+                    </span>
+                  )}
+                  {complianceModal.programName && (
+                    <span className="text-[var(--text)] font-semibold">{complianceModal.programName}</span>
+                  )}
+                </div>
+              )}
+
+              {/* Bounty */}
+              {complianceModal.bounty && (complianceModal.bounty.min || complianceModal.bounty.max) && (
+                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[var(--accent-dim)] text-xs">
+                  <Zap className="w-4 h-4 text-[var(--accent)]" />
+                  <div>
+                    <span className="font-bold text-[var(--accent)]">Bounty Range: </span>
+                    <span className="text-[var(--text)]">
+                      {complianceModal.bounty.min ? `${complianceModal.bounty.currency} ${complianceModal.bounty.min}` : "—"}
+                      {" → "}
+                      {complianceModal.bounty.max ? `${complianceModal.bounty.currency} ${complianceModal.bounty.max}` : "—"}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Scope by Tiers */}
               <div className="space-y-2">
                 <h3 className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold flex items-center gap-1.5">
                   <Globe className="w-3.5 h-3.5 text-[var(--blue)]" />
@@ -569,14 +615,44 @@ export default function LiveMonitorPage() {
                   <span className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--surface2)] text-[var(--dim)] normal-case tracking-normal">
                     {complianceModal.scope.source}
                   </span>
+                  <span className="text-[9px] text-[var(--dim)] normal-case tracking-normal">
+                    ({complianceModal.scope.entries.length} entries)
+                  </span>
                 </h3>
-                <div className="bg-[var(--bg)] rounded-xl p-3 space-y-1.5">
-                  {complianceModal.scope.entries.map((entry, i) => (
-                    <div key={i} className="flex items-center gap-2 text-xs">
-                      <CheckCircle2 className="w-3 h-3 text-[var(--accent)] shrink-0" />
-                      <span className="font-mono text-[var(--text)]">{entry}</span>
-                    </div>
-                  ))}
+                <div className="bg-[var(--bg)] rounded-xl p-3 space-y-3">
+                  {complianceModal.scope.tiers && Object.keys(complianceModal.scope.tiers).length > 0 ? (
+                    Object.entries(complianceModal.scope.tiers).map(([tier, entries]) => (
+                      <div key={tier} className="space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                            tier.toLowerCase().includes("1") ? "bg-[var(--accent)]/15 text-[var(--accent)]" :
+                            tier.toLowerCase().includes("2") ? "bg-[var(--blue)]/15 text-[var(--blue)]" :
+                            tier.toLowerCase().includes("3") ? "bg-[var(--purple)]/15 text-[var(--purple)]" :
+                            "bg-[var(--surface2)] text-[var(--dim)]"
+                          }`}>
+                            {tier === "default" ? "General" : tier}
+                          </span>
+                          <span className="text-[9px] text-[var(--dim)]">{entries.length} targets</span>
+                        </div>
+                        {entries.map((entry, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs ml-2">
+                            <CheckCircle2 className="w-3 h-3 text-[var(--accent)] shrink-0" />
+                            <span className="font-mono text-[var(--text)]">{entry.endpoint}</span>
+                            {entry.type && entry.type !== "url" && (
+                              <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--surface2)] text-[var(--dim)]">{entry.type}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ))
+                  ) : (
+                    complianceModal.scope.entries.map((entry, i) => (
+                      <div key={i} className="flex items-center gap-2 text-xs">
+                        <CheckCircle2 className="w-3 h-3 text-[var(--accent)] shrink-0" />
+                        <span className="font-mono text-[var(--text)]">{entry}</span>
+                      </div>
+                    ))
+                  )}
                   {complianceModal.scope.warnings.map((warn, i) => (
                     <div key={`w-${i}`} className="flex items-center gap-2 text-xs text-[var(--orange)]">
                       <AlertTriangle className="w-3 h-3 shrink-0" />
@@ -596,6 +672,13 @@ export default function LiveMonitorPage() {
                   </span>
                 </h3>
                 <div className="bg-[var(--bg)] rounded-xl p-3 space-y-2">
+                  {complianceModal.roe.description && (
+                    <p className="text-[11px] text-[var(--dim)] italic pb-1 border-b border-[var(--border)]">
+                      {complianceModal.roe.description.length > 200
+                        ? complianceModal.roe.description.slice(0, 200) + "…"
+                        : complianceModal.roe.description}
+                    </p>
+                  )}
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-[var(--dim)]">User-Agent</span>
                     <span className={`font-mono text-[11px] ${complianceModal.roe.userAgent ? "text-[var(--text)]" : "text-[var(--dim)] italic"}`}>
@@ -624,6 +707,28 @@ export default function LiveMonitorPage() {
                       </span>
                     )}
                   </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[var(--dim)]">Automated Tooling</span>
+                    {complianceModal.roe.automatedTooling === "allowed" ? (
+                      <span className="text-[var(--accent)] font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> Allowed
+                      </span>
+                    ) : complianceModal.roe.automatedTooling === "not_allowed" ? (
+                      <span className="text-[var(--red)] font-bold flex items-center gap-1">
+                        <Ban className="w-3 h-3" /> Not Allowed
+                      </span>
+                    ) : (
+                      <span className="text-[var(--dim)] italic">Unknown</span>
+                    )}
+                  </div>
+                  {complianceModal.roe.intigritiMe && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-[var(--dim)]">@intigriti.me Email</span>
+                      <span className="text-[var(--accent)] font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> Required
+                      </span>
+                    </div>
+                  )}
                   {complianceModal.roe.warnings.map((warn, i) => (
                     <div key={i} className="flex items-center gap-2 text-xs text-[var(--orange)] pt-1">
                       <AlertTriangle className="w-3 h-3 shrink-0" />
