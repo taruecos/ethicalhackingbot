@@ -17,7 +17,7 @@ log "=== Deploy started ==="
 cd "$REPO_DIR"
 
 log "Pulling latest code..."
-git pull origin main 2>&1 | tee -a "$LOG_FILE"
+git pull origin "$(git rev-parse --abbrev-ref HEAD)" 2>&1 | tee -a "$LOG_FILE"
 
 log "Building and restarting containers..."
 cd "$COMPOSE_DIR"
