@@ -21,6 +21,11 @@ import {
   Shield,
   Globe,
   Ban,
+  Info,
+  X,
+  AlertTriangle,
+  ShieldCheck,
+  ShieldAlert,
 } from "lucide-react";
 import { StatCard } from "@/components/stat-card";
 
@@ -87,6 +92,30 @@ const PHASE_STEPS = [
   { id: "report", label: "Report" },
 ];
 
+interface ComplianceData {
+  target: string;
+  programName: string | null;
+  scope: {
+    entries: string[];
+    source: "program" | "config" | "default";
+    warnings: string[];
+  };
+  roe: {
+    userAgent: string | null;
+    requestHeader: string | null;
+    safeHarbour: boolean;
+    rateLimit: number;
+    source: "program" | "config" | "default";
+    warnings: string[];
+  };
+  modules: {
+    enabled: string[];
+    descriptions: Record<string, string>;
+  };
+  risks: string[];
+  compliant: boolean;
+}
+
 export default function LiveMonitorPage() {
   const [activeScans, setActiveScans] = useState<ScanProgress[]>([]);
   const [queuedScans, setQueuedScans] = useState<QueuedScan[]>([]);
@@ -98,6 +127,8 @@ export default function LiveMonitorPage() {
   const [paused, setPaused] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [logFilter, setLogFilter] = useState<string>("");
+  const [complianceModal, setComplianceModal] = useState<ComplianceData | null>(null);
+  const [complianceLoading, setComplianceLoading] = useState<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const logsContainerRef = useRef<HTMLDivElement>(null);
 
@@ -159,6 +190,21 @@ export default function LiveMonitorPage() {
       // silent
     } finally {
       setStartingId(null);
+    }
+  }
+
+  async function fetchCompliance(scanId: string) {
+    setComplianceLoading(scanId);
+    try {
+      const res = await fetch(`/api/scans/${scanId}/compliance`);
+      if (res.ok) {
+        const data: ComplianceData = await res.json();
+        setComplianceModal(data);
+      }
+    } catch {
+      // silent
+    } finally {
+      setComplianceLoading(null);
     }
   }
 
@@ -291,18 +337,32 @@ export default function LiveMonitorPage() {
                   </p>
                 </div>
               </div>
-              <button
-                onClick={() => startScan(scan.id)}
-                disabled={startingId === scan.id}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--accent)] text-black text-xs font-bold hover:opacity-90 transition-opacity disabled:opacity-50"
-              >
-                {startingId === scan.id ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Play className="w-3.5 h-3.5" />
-                )}
-                Start Scan
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => fetchCompliance(scan.id)}
+                  disabled={complianceLoading === scan.id}
+                  className="flex items-center justify-center w-8 h-8 rounded-lg bg-[var(--surface2)] text-[var(--dim)] hover:text-[var(--accent)] hover:bg-[var(--accent-dim)] transition-colors disabled:opacity-50"
+                  title="Compliance Check"
+                >
+                  {complianceLoading === scan.id ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Info className="w-4 h-4" />
+                  )}
+                </button>
+                <button
+                  onClick={() => startScan(scan.id)}
+                  disabled={startingId === scan.id}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--accent)] text-black text-xs font-bold hover:opacity-90 transition-opacity disabled:opacity-50"
+                >
+                  {startingId === scan.id ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Play className="w-3.5 h-3.5" />
+                  )}
+                  Start Scan
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -429,6 +489,186 @@ export default function LiveMonitorPage() {
           <Activity className="w-8 h-8 text-[var(--dim)] mx-auto mb-3" />
           <p className="text-sm text-[var(--dim)]">No scans in queue</p>
           <p className="text-xs text-[var(--dim)] mt-1">Add a scan from Programs to see it here</p>
+        </div>
+      )}
+
+      {/* Compliance Modal */}
+      {complianceModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto">
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)] sticky top-0 bg-[var(--surface)] rounded-t-2xl z-10">
+              <div className="flex items-center gap-3">
+                {complianceModal.compliant ? (
+                  <div className="w-8 h-8 rounded-lg bg-[var(--accent)]/15 flex items-center justify-center">
+                    <ShieldCheck className="w-4 h-4 text-[var(--accent)]" />
+                  </div>
+                ) : (
+                  <div className="w-8 h-8 rounded-lg bg-[var(--red)]/15 flex items-center justify-center">
+                    <ShieldAlert className="w-4 h-4 text-[var(--red)]" />
+                  </div>
+                )}
+                <div>
+                  <h2 className="text-sm font-bold">Compliance Check</h2>
+                  <p className="text-xs text-[var(--dim)]">{complianceModal.target}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setComplianceModal(null)}
+                className="p-1.5 rounded-lg hover:bg-[var(--surface2)] text-[var(--dim)] hover:text-[var(--text)] transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-5">
+              {/* Overall status */}
+              <div className={`flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold ${
+                complianceModal.compliant
+                  ? "bg-[var(--accent-dim)] text-[var(--accent)]"
+                  : "bg-[var(--red)]/15 text-[var(--red)]"
+              }`}>
+                {complianceModal.compliant ? (
+                  <>
+                    <ShieldCheck className="w-4 h-4" />
+                    Scan is compliant — safe to start
+                  </>
+                ) : (
+                  <>
+                    <ShieldAlert className="w-4 h-4" />
+                    Compliance issues detected — review before starting
+                  </>
+                )}
+              </div>
+
+              {/* Risks */}
+              {complianceModal.risks.length > 0 && (
+                <div className="space-y-2">
+                  <h3 className="text-[10px] uppercase tracking-widest text-[var(--red)] font-semibold flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Risks ({complianceModal.risks.length})
+                  </h3>
+                  <div className="space-y-1.5">
+                    {complianceModal.risks.map((risk, i) => (
+                      <div key={i} className="flex items-start gap-2 text-xs text-[var(--red)] bg-[var(--red)]/10 rounded-lg px-3 py-2">
+                        <Ban className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        {risk}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Scope */}
+              <div className="space-y-2">
+                <h3 className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-[var(--blue)]" />
+                  Scope
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--surface2)] text-[var(--dim)] normal-case tracking-normal">
+                    {complianceModal.scope.source}
+                  </span>
+                </h3>
+                <div className="bg-[var(--bg)] rounded-xl p-3 space-y-1.5">
+                  {complianceModal.scope.entries.map((entry, i) => (
+                    <div key={i} className="flex items-center gap-2 text-xs">
+                      <CheckCircle2 className="w-3 h-3 text-[var(--accent)] shrink-0" />
+                      <span className="font-mono text-[var(--text)]">{entry}</span>
+                    </div>
+                  ))}
+                  {complianceModal.scope.warnings.map((warn, i) => (
+                    <div key={`w-${i}`} className="flex items-center gap-2 text-xs text-[var(--orange)]">
+                      <AlertTriangle className="w-3 h-3 shrink-0" />
+                      {warn}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Rules of Engagement */}
+              <div className="space-y-2">
+                <h3 className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5 text-[var(--purple)]" />
+                  Rules of Engagement
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--surface2)] text-[var(--dim)] normal-case tracking-normal">
+                    {complianceModal.roe.source}
+                  </span>
+                </h3>
+                <div className="bg-[var(--bg)] rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[var(--dim)]">User-Agent</span>
+                    <span className={`font-mono text-[11px] ${complianceModal.roe.userAgent ? "text-[var(--text)]" : "text-[var(--dim)] italic"}`}>
+                      {complianceModal.roe.userAgent || "Default"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[var(--dim)]">Rate Limit</span>
+                    <span className="font-mono text-[11px] text-[var(--text)]">{complianceModal.roe.rateLimit} req/min</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[var(--dim)]">Custom Header</span>
+                    <span className={`font-mono text-[11px] ${complianceModal.roe.requestHeader ? "text-[var(--text)]" : "text-[var(--dim)] italic"}`}>
+                      {complianceModal.roe.requestHeader || "None"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-[var(--dim)]">Safe Harbour</span>
+                    {complianceModal.roe.safeHarbour ? (
+                      <span className="text-[var(--accent)] font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> Yes
+                      </span>
+                    ) : (
+                      <span className="text-[var(--orange)] font-bold flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3" /> No
+                      </span>
+                    )}
+                  </div>
+                  {complianceModal.roe.warnings.map((warn, i) => (
+                    <div key={i} className="flex items-center gap-2 text-xs text-[var(--orange)] pt-1">
+                      <AlertTriangle className="w-3 h-3 shrink-0" />
+                      {warn}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Modules */}
+              <div className="space-y-2">
+                <h3 className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold flex items-center gap-1.5">
+                  <Target className="w-3.5 h-3.5 text-[var(--cyan)]" />
+                  Scan Modules ({complianceModal.modules.enabled.length})
+                </h3>
+                <div className="bg-[var(--bg)] rounded-xl p-3 space-y-2">
+                  {complianceModal.modules.enabled.length === 0 ? (
+                    <p className="text-xs text-[var(--dim)] italic">No modules selected — recon only</p>
+                  ) : (
+                    complianceModal.modules.enabled.map((mod) => (
+                      <div key={mod} className="text-xs">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-3 h-3 text-[var(--accent)] shrink-0" />
+                          <span className="font-bold text-[var(--text)] capitalize">{mod.replace(/_/g, " ")}</span>
+                        </div>
+                        {complianceModal.modules.descriptions[mod] && (
+                          <p className="text-[var(--dim)] text-[11px] ml-5 mt-0.5">
+                            {complianceModal.modules.descriptions[mod].split(" — ")[1] || complianceModal.modules.descriptions[mod]}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal footer */}
+            <div className="px-5 py-4 border-t border-[var(--border)] sticky bottom-0 bg-[var(--surface)] rounded-b-2xl">
+              <button
+                onClick={() => setComplianceModal(null)}
+                className="w-full py-2.5 rounded-xl bg-[var(--surface2)] text-[var(--text)] text-xs font-bold hover:bg-[var(--border)] transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
