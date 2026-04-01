@@ -25,6 +25,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   try {
     const compliance = scan.program?.compliance as Record<string, unknown> | null;
+    const programScope = scan.program?.scope as string[] | null;
+    const configScope = config.scope as string[] | undefined;
+    const configRoe = config.rulesOfEngagement as Record<string, unknown> | undefined;
+
+    // Build scope: program scope > config scope > default to target domain
+    const scope = programScope && programScope.length > 0
+      ? programScope
+      : configScope && configScope.length > 0
+        ? configScope
+        : [scan.target, `*.${scan.target}`];
+
+    // Build ROE: program compliance > config ROE > null
+    const roe = compliance
+      ? {
+          userAgent: compliance.userAgent || null,
+          requestHeader: compliance.requestHeader || null,
+          safeHarbour: compliance.safeHarbour || null,
+        }
+      : configRoe
+        ? {
+            userAgent: configRoe.userAgent || null,
+            requestHeader: configRoe.requestHeader || null,
+            safeHarbour: configRoe.safeHarbour || null,
+          }
+        : null;
 
     await fetch(`${scanServiceUrl}/api/scan`, {
       method: "POST",
@@ -37,13 +62,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         depth: config.depth || "standard",
         modules: config.modules || [],
         rate_limit: config.rateLimit || 30,
-        rules_of_engagement: compliance
-          ? {
-              userAgent: compliance.userAgent || null,
-              requestHeader: compliance.requestHeader || null,
-              safeHarbour: compliance.safeHarbour || null,
-            }
-          : null,
+        scope,
+        rules_of_engagement: roe,
       }),
     });
 

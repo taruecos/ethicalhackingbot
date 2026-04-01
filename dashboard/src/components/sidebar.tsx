@@ -13,6 +13,7 @@ import {
   LogOut,
   Bug,
   Terminal,
+  Crosshair as CrosshairIcon,
   ChevronsLeft,
   ChevronsRight,
   X,
@@ -22,6 +23,7 @@ import { useSidebar } from "./sidebar-context";
 const NAV = [
   { href: "/overview", label: "Overview", icon: LayoutDashboard },
   { href: "/mission", label: "Mission Control", icon: Crosshair },
+  { href: "/new-scan", label: "New Scan", icon: CrosshairIcon },
   { href: "/monitor", label: "Live Monitor", icon: Activity },
   { href: "/findings", label: "Findings", icon: AlertTriangle },
   { href: "/programs", label: "Programs", icon: Globe },

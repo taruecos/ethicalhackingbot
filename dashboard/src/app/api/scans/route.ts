@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { domain, programId, depth, modules, rateLimit, rulesOfEngagement } = body;
+  const { domain, programId, depth, modules, rateLimit, scope, rulesOfEngagement } = body;
 
   if (!domain) {
     return NextResponse.json({ error: "Domain required" }, { status: 400 });
@@ -27,12 +27,18 @@ export async function POST(req: NextRequest) {
 
   const target = domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
 
-  // Create scan in DB
+  // Create scan in DB — scope and ROE stored in config for the scanner
   const scan = await prisma.scan.create({
     data: {
       target,
       status: "QUEUED",
-      config: { depth: depth || "standard", modules: modules || [], rateLimit: rateLimit || 30 },
+      config: {
+        depth: depth || "standard",
+        modules: modules || [],
+        rateLimit: rateLimit || 30,
+        scope: scope || [],
+        rulesOfEngagement: rulesOfEngagement || null,
+      },
       programId: programId || null,
     },
   });
