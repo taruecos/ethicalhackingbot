@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import {
   Loader2,
   Globe,
@@ -25,6 +25,7 @@ import {
   ShieldX,
   ShieldQuestion,
 } from "lucide-react";
+import { usePrograms, type DBProgram } from "@/components/programs-context";
 
 // ── Types ──
 
@@ -45,25 +46,6 @@ interface Compliance {
   requestHeader?: string | null;
   description?: string;
   intigritiMe?: boolean;
-}
-
-interface DBProgram {
-  id: string;
-  platform: string;
-  name: string;
-  slug: string;
-  url: string;
-  intigritiId: string | null;
-  scope: ScopeItem[];
-  compliance: Compliance;
-  maxBounty: number | null;
-  minBounty: number | null;
-  currency: string;
-  industry: string | null;
-  programType: string | null;
-  confidentiality: string | null;
-  active: boolean;
-  syncedAt: string;
 }
 
 interface IntigritiProgram {
@@ -178,9 +160,7 @@ export default function ProgramsPage() {
 // ── DB Programs Tab (synced, with compliance) ──
 
 function DBProgramsTab() {
-  const [programs, setPrograms] = useState<DBProgram[]>([]);
-  const [industries, setIndustries] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { programs: allPrograms, industries, loading, syncing } = usePrograms();
   const [search, setSearch] = useState("");
   const [complianceFilter, setComplianceFilter] = useState(true);
   const [bountyFilter, setBountyFilter] = useState<"all" | "bounty" | "disclosure">("all");
@@ -202,55 +182,55 @@ function DBProgramsTab() {
     sortBy !== "syncedAt",
   ].filter(Boolean).length;
 
-  const fetchPrograms = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({ limit: "500" });
-      if (complianceFilter) params.set("compliant", "true");
-      if (search) params.set("search", search);
-      if (bountyFilter === "bounty") params.set("hasBounty", "true");
-      if (bountyFilter === "disclosure") params.set("hasBounty", "false");
-      if (industryFilter) params.set("industry", industryFilter);
-      if (confidentialityFilter) params.set("confidentiality", confidentialityFilter);
-      params.set("sortBy", sortBy);
-      params.set("sortDir", sortBy === "maxBounty" ? "desc" : sortBy === "name" ? "asc" : "desc");
-      const res = await fetch(`/api/programs?${params}`);
-      if (res.ok) {
-        const data = await res.json();
-        let progs = data.programs || [];
-        if (safeHarbourFilter !== "all") {
-          progs = progs.filter((p: DBProgram) => {
-            const sh = p.compliance?.safeHarbour;
-            return safeHarbourFilter === "yes" ? sh === true : sh === false;
-          });
-        }
-        setPrograms(progs);
-        if (data.industries) setIndustries(data.industries);
-      }
-    } catch {
-      // silent
-    } finally {
-      setLoading(false);
+  // Client-side filtering and sorting on context data
+  const programs = useMemo(() => {
+    let filtered = [...allPrograms];
+
+    if (complianceFilter) {
+      filtered = filtered.filter((p) => {
+        const c = p.compliance;
+        if (!c) return false;
+        const tooling = c.automatedTooling;
+        return tooling === true || tooling === 1 || c.automatedToolingStatus === "allowed";
+      });
     }
-  }, [complianceFilter, search, bountyFilter, industryFilter, confidentialityFilter, safeHarbourFilter, sortBy]);
 
-  const [syncing, setSyncing] = useState(false);
+    if (search) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter((p) =>
+        p.name.toLowerCase().includes(q) || p.slug.toLowerCase().includes(q)
+      );
+    }
 
-  // Load existing programs from DB immediately, then sync in background
-  useEffect(() => {
-    let cancelled = false;
-    // First: show what we already have in DB
-    fetchPrograms().then(() => {
-      if (cancelled) return;
-      // Then: sync from Intigriti in background
-      setSyncing(true);
-      fetch("/api/programs/sync", { method: "POST" })
-        .then(() => { if (!cancelled) fetchPrograms(); })
-        .catch(() => {})
-        .finally(() => { if (!cancelled) setSyncing(false); });
+    if (bountyFilter === "bounty") {
+      filtered = filtered.filter((p) => p.maxBounty && p.maxBounty > 0);
+    } else if (bountyFilter === "disclosure") {
+      filtered = filtered.filter((p) => !p.maxBounty || p.maxBounty === 0);
+    }
+
+    if (industryFilter) {
+      filtered = filtered.filter((p) => p.industry === industryFilter);
+    }
+
+    if (confidentialityFilter) {
+      filtered = filtered.filter((p) => p.confidentiality === confidentialityFilter);
+    }
+
+    if (safeHarbourFilter !== "all") {
+      filtered = filtered.filter((p) => {
+        const sh = p.compliance?.safeHarbour;
+        return safeHarbourFilter === "yes" ? sh === true : sh === false;
+      });
+    }
+
+    filtered.sort((a, b) => {
+      if (sortBy === "maxBounty") return (b.maxBounty || 0) - (a.maxBounty || 0);
+      if (sortBy === "name") return a.name.localeCompare(b.name);
+      return new Date(b.syncedAt).getTime() - new Date(a.syncedAt).getTime();
     });
-    return () => { cancelled = true; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    return filtered;
+  }, [allPrograms, complianceFilter, search, bountyFilter, industryFilter, confidentialityFilter, safeHarbourFilter, sortBy]);
 
   async function launchScan(program: DBProgram) {
     setScanning(program.id);
