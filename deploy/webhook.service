@@ -1,0 +1,16 @@
+[Unit]
+Description=GitHub Webhook Listener for EthicalHackingBot
+After=network.target docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/ethicalhackingbot/deploy
+ExecStart=/usr/bin/python3 /root/ethicalhackingbot/deploy/webhook-listener.py
+Restart=always
+RestartSec=5
+Environment=WEBHOOK_PORT=9000
+Environment=WEBHOOK_SECRET=dd85e6a687f9297283569d44c219ca5d148bdd0f7e05acc314c64bfcf0b031e1
+Environment=DEPLOY_BRANCH=main
+
+[Install]
+WantedBy=multi-user.target
