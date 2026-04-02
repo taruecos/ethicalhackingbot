@@ -19,6 +19,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: `Scan is ${scan.status}, not QUEUED` }, { status: 400 });
   }
 
+  // Check if this is a resume (has checkpoint + saved endpoints)
+  const checkpoint = await prisma.scanCheckpoint.findUnique({ where: { scanId: id } });
+  const savedEndpoints = checkpoint
+    ? await prisma.crawlEndpoint.findMany({ where: { scanId: id }, orderBy: { createdAt: "asc" } })
+    : [];
+
   const config = scan.config as Record<string, unknown>;
   const dashboardUrl = process.env.DASHBOARD_URL || "http://localhost:3000";
   const token = process.env.DASHBOARD_TOKEN || "";
@@ -92,20 +98,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           }
         : null;
 
+    const scanPayload: Record<string, unknown> = {
+      domain: scan.target,
+      scan_id: scan.id,
+      callback_url: `${dashboardUrl}/api/scans/${scan.id}/progress`,
+      callback_token: token,
+      depth: config.depth || "standard",
+      modules: config.modules || [],
+      rate_limit: config.rateLimit || 30,
+      scope,
+      rules_of_engagement: roe,
+    };
+
+    // If resuming, include checkpoint + saved endpoints
+    if (checkpoint && savedEndpoints.length > 0) {
+      scanPayload.resume = {
+        last_module: checkpoint.lastModule,
+        last_module_name: checkpoint.lastModuleName,
+        endpoints: savedEndpoints.map((ep) => ({ url: ep.url, method: ep.method, params: ep.params })),
+      };
+    }
+
     await fetch(`${scanServiceUrl}/api/scan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        domain: scan.target,
-        scan_id: scan.id,
-        callback_url: `${dashboardUrl}/api/scans/${scan.id}/progress`,
-        callback_token: token,
-        depth: config.depth || "standard",
-        modules: config.modules || [],
-        rate_limit: config.rateLimit || 30,
-        scope,
-        rules_of_engagement: roe,
-      }),
+      body: JSON.stringify(scanPayload),
     });
 
     const updated = await prisma.scan.update({

@@ -98,10 +98,37 @@ export async function GET() {
     createdAt: scan.createdAt.toISOString(),
   }));
 
+  // Get recent completed/errored/cancelled scans that can be relaunched
+  const relaunchableScans = await prisma.scan.findMany({
+    where: { status: { in: ["COMPLETE", "ERROR", "CANCELLED"] } },
+    include: {
+      program: true,
+      checkpoint: true,
+      _count: { select: { findings: true, crawlEndpoints: true } },
+    },
+    orderBy: { updatedAt: "desc" },
+    take: 10,
+  });
+
+  const relaunchableScansMapped = relaunchableScans.map((scan) => ({
+    id: scan.id,
+    target: scan.target,
+    status: scan.status,
+    programName: scan.program?.name || null,
+    hasCheckpoint: scan.checkpoint !== null,
+    lastModule: scan.checkpoint?.lastModuleName || null,
+    lastModuleIndex: scan.checkpoint?.lastModule || 0,
+    endpointsCount: scan._count.crawlEndpoints,
+    findingsCount: scan._count.findings,
+    finishedAt: scan.finishedAt?.toISOString() || scan.updatedAt.toISOString(),
+    error: scan.error,
+  }));
+
   return NextResponse.json({
     online,
     activeScans,
     queuedScans: queuedScansMapped,
+    relaunchableScans: relaunchableScansMapped,
     metrics,
     logs: botLogs,
     aiInsights,

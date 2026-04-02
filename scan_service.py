@@ -71,6 +71,12 @@ class RulesOfEngagement(BaseModel):
     automatedTooling: str | None = None  # "allowed", "not_allowed", "conditional", "unknown"
 
 
+class ResumeData(BaseModel):
+    last_module: int = 0
+    last_module_name: str = ""
+    endpoints: list[dict] = []
+
+
 class ScanRequest(BaseModel):
     domain: str
     scan_id: str
@@ -81,6 +87,7 @@ class ScanRequest(BaseModel):
     rate_limit: int = 30
     rules_of_engagement: RulesOfEngagement | None = None
     scope: list[str] | None = None
+    resume: ResumeData | None = None
 
 
 class ScanStatus(BaseModel):
@@ -308,89 +315,152 @@ async def _run_scan(req: ScanRequest, state: dict):
     request_delay = max(60.0 / req.rate_limit, 1.0)
     add_log("INFO", "compliance", f"Rate limit: {req.rate_limit} req/min (delay: {request_delay:.1f}s)", req.scan_id)
 
+    # Helper: save endpoints to dashboard DB
+    async def _save_endpoints_to_db(scan_id: str, endpoints_list, callback_url: str | None, callback_token: str | None):
+        if not callback_url:
+            return
+        try:
+            import httpx
+            base_url = callback_url.rsplit("/progress", 1)[0]
+            url = f"{base_url}/endpoints"
+            headers = {"Content-Type": "application/json"}
+            if callback_token:
+                headers["Authorization"] = f"Bearer {callback_token}"
+            payload = {"endpoints": [{"url": ep.url, "method": ep.method, "params": getattr(ep, "params", []), "source": "crawler"} for ep in endpoints_list]}
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                add_log("INFO", "persist", f"Saved {len(endpoints_list)} endpoints to DB (status {resp.status_code})", scan_id)
+        except Exception as e:
+            add_log("WARN", "persist", f"Failed to save endpoints: {e}", scan_id)
+
+    # Helper: save checkpoint to dashboard DB
+    async def _save_checkpoint(scan_id: str, module_index: int, module_name: str, state: dict, callback_url: str | None, callback_token: str | None):
+        if not callback_url:
+            return
+        try:
+            import httpx
+            base_url = callback_url.rsplit("/progress", 1)[0]
+            url = f"{base_url}/checkpoint"
+            headers = {"Content-Type": "application/json"}
+            if callback_token:
+                headers["Authorization"] = f"Bearer {callback_token}"
+            payload = {
+                "lastModule": module_index,
+                "lastModuleName": module_name,
+                "endpointsTotal": state.get("endpoints_total", 0),
+                "findingsCount": len(state.get("findings", [])),
+                "stats": state.get("stats", {}),
+                "phase": state.get("phase", "scan"),
+                "progress": state.get("progress", 0),
+            }
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.patch(url, json=payload, headers=headers)
+                add_log("DEBUG", "persist", f"Checkpoint saved: module {module_index} ({module_name})", scan_id)
+        except Exception as e:
+            add_log("WARN", "persist", f"Failed to save checkpoint: {e}", scan_id)
+
     try:
         # ═══════════════════════════════════════════
-        # Phase 1: Reconnaissance
+        # Phase 1: Reconnaissance (or Resume)
         # ═══════════════════════════════════════════
-        state["phase"] = "recon"
-        state["progress"] = 5
-        state["current_module"] = "crawler"
+        resume_module = 0
+        if req.resume and req.resume.endpoints:
+            # Resume mode — skip crawl, use saved endpoints
+            add_log("INFO", "resume", f"Resuming scan — {len(req.resume.endpoints)} saved endpoints, last module: {req.resume.last_module} ({req.resume.last_module_name})", req.scan_id)
+            resume_module = req.resume.last_module
 
-        # Build seed URLs — if target_url isn't a real domain, use scope entries
-        seed_urls = []
-        parsed_target = urlparse(target_url)
-        target_host = parsed_target.hostname or ""
-        # Check if target resolves to something real (has a TLD)
-        if "." in target_host:
-            seed_urls = [target_url]
-        else:
-            # Target is a program name (e.g. "MyToyota"), not a domain
-            # Use scope entries as seed URLs
-            for entry in scope_entries:
-                entry_clean = entry.strip().lower()
-                if entry_clean.startswith("*."):
-                    # Wildcard — use the base domain (e.g. *.toyota.com → toyota.com)
-                    base_domain = entry_clean[2:]
-                    seed_urls.append(f"https://{base_domain}")
-                elif not entry_clean.startswith(("http://", "https://")):
-                    seed_urls.append(f"https://{entry_clean}")
-                else:
-                    seed_urls.append(entry_clean)
-            # Deduplicate
-            seed_urls = list(dict.fromkeys(seed_urls))
-            add_log("INFO", "recon", f"Target '{req.domain}' is not a domain — using {len(seed_urls)} scope domains as seed URLs", req.scan_id)
+            # Reconstruct endpoint objects from saved data
+            from types import SimpleNamespace
+            endpoints = [SimpleNamespace(url=ep["url"], method=ep.get("method", "GET"), params=ep.get("params", [])) for ep in req.resume.endpoints]
 
-        if not seed_urls:
-            add_log("CRITICAL", "recon", "No valid seed URLs — cannot crawl", req.scan_id)
-            state["status"] = "error"
-            state["error"] = "No valid seed URLs to crawl"
-            await _notify_dashboard(req, state, "error")
-            return
-
-        add_log("INFO", "recon", f"Starting crawl on {len(seed_urls)} seed URL(s) (depth: {req.depth})", req.scan_id)
-        for url in seed_urls[:5]:
-            add_log("DEBUG", "recon", f"Seed: {url}", req.scan_id)
-        if len(seed_urls) > 5:
-            add_log("DEBUG", "recon", f"... and {len(seed_urls) - 5} more seeds", req.scan_id)
-        await _notify_dashboard(req, state)
-
-        async with HttpClient(concurrency=3, request_delay=request_delay, timeout=30, headers=scan_headers, scope_enforcer=scope_enforcer) as http:
-            crawler = EndpointCrawler(http, max_depth=3, scope_enforcer=scope_enforcer)
-            endpoints = []
-            for seed_url in seed_urls:
-                add_log("INFO", "recon", f"Crawling {seed_url}...", req.scan_id)
-                eps = await crawler.crawl(seed_url)
-                add_log("INFO", "recon", f"  → {len(eps)} endpoints from {seed_url}", req.scan_id)
-                endpoints.extend(eps)
-            # Deduplicate across all seeds
-            seen = set()
-            unique_endpoints = []
-            for ep in endpoints:
-                key = (ep.url, ep.method)
-                if key not in seen:
-                    seen.add(key)
-                    unique_endpoints.append(ep)
-            endpoints = unique_endpoints
-            add_log("INFO", "recon", f"Crawler found {len(endpoints)} raw endpoints (across {len(seed_urls)} seeds)", req.scan_id)
-
-            # Log some discovered endpoints for visibility
-            for ep in endpoints[:10]:
-                add_log("DEBUG", "recon", f"Found: {ep.method} {ep.url}", req.scan_id)
-            if len(endpoints) > 10:
-                add_log("DEBUG", "recon", f"... and {len(endpoints) - 10} more endpoints", req.scan_id)
-
-            # ─── Scope Filter ───
-            endpoints, blocked = scope_enforcer.filter_endpoints(endpoints)
-            state["blocked_count"] = len(blocked)
-            if blocked:
-                add_log("WARN", "compliance", f"BLOCKED {len(blocked)} out-of-scope endpoints", req.scan_id)
-                for ep in blocked[:5]:
-                    add_log("WARN", "compliance", f"  Blocked: {ep.url}", req.scan_id)
-            add_log("INFO", "recon", f"{len(endpoints)} endpoints in scope — ready for scanning", req.scan_id)
-
+            state["phase"] = "scan"
             state["endpoints_total"] = len(endpoints)
             state["progress"] = 15
+            state["modules_done"] = resume_module
             await _notify_dashboard(req, state)
+        else:
+            # Normal crawl
+            state["phase"] = "recon"
+            state["progress"] = 5
+            state["current_module"] = "crawler"
+
+            # Build seed URLs — if target_url isn't a real domain, use scope entries
+            seed_urls = []
+            parsed_target = urlparse(target_url)
+            target_host = parsed_target.hostname or ""
+            if "." in target_host:
+                seed_urls = [target_url]
+            else:
+                for entry in scope_entries:
+                    entry_clean = entry.strip().lower()
+                    if entry_clean.startswith("*."):
+                        base_domain = entry_clean[2:]
+                        seed_urls.append(f"https://{base_domain}")
+                    elif not entry_clean.startswith(("http://", "https://")):
+                        seed_urls.append(f"https://{entry_clean}")
+                    else:
+                        seed_urls.append(entry_clean)
+                seed_urls = list(dict.fromkeys(seed_urls))
+                add_log("INFO", "recon", f"Target '{req.domain}' is not a domain — using {len(seed_urls)} scope domains as seed URLs", req.scan_id)
+
+            if not seed_urls:
+                add_log("CRITICAL", "recon", "No valid seed URLs — cannot crawl", req.scan_id)
+                state["status"] = "error"
+                state["error"] = "No valid seed URLs to crawl"
+                await _notify_dashboard(req, state, "error")
+                return
+
+            add_log("INFO", "recon", f"Starting crawl on {len(seed_urls)} seed URL(s) (depth: {req.depth})", req.scan_id)
+            for url in seed_urls[:5]:
+                add_log("DEBUG", "recon", f"Seed: {url}", req.scan_id)
+            if len(seed_urls) > 5:
+                add_log("DEBUG", "recon", f"... and {len(seed_urls) - 5} more seeds", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            endpoints = []  # will be populated in the HttpClient block below
+
+        async with HttpClient(concurrency=3, request_delay=request_delay, timeout=30, headers=scan_headers, scope_enforcer=scope_enforcer) as http:
+            # Only crawl if not resuming
+            if not (req.resume and req.resume.endpoints):
+                crawler = EndpointCrawler(http, max_depth=3, scope_enforcer=scope_enforcer)
+                for seed_url in seed_urls:
+                    add_log("INFO", "recon", f"Crawling {seed_url}...", req.scan_id)
+                    eps = await crawler.crawl(seed_url)
+                    add_log("INFO", "recon", f"  → {len(eps)} endpoints from {seed_url}", req.scan_id)
+                    endpoints.extend(eps)
+                # Deduplicate across all seeds
+                seen = set()
+                unique_endpoints = []
+                for ep in endpoints:
+                    key = (ep.url, ep.method)
+                    if key not in seen:
+                        seen.add(key)
+                        unique_endpoints.append(ep)
+                endpoints = unique_endpoints
+                add_log("INFO", "recon", f"Crawler found {len(endpoints)} raw endpoints (across {len(seed_urls)} seeds)", req.scan_id)
+
+                for ep in endpoints[:10]:
+                    add_log("DEBUG", "recon", f"Found: {ep.method} {ep.url}", req.scan_id)
+                if len(endpoints) > 10:
+                    add_log("DEBUG", "recon", f"... and {len(endpoints) - 10} more endpoints", req.scan_id)
+
+                # ─── Scope Filter ───
+                endpoints, blocked = scope_enforcer.filter_endpoints(endpoints)
+                state["blocked_count"] = len(blocked)
+                if blocked:
+                    add_log("WARN", "compliance", f"BLOCKED {len(blocked)} out-of-scope endpoints", req.scan_id)
+                    for ep in blocked[:5]:
+                        add_log("WARN", "compliance", f"  Blocked: {ep.url}", req.scan_id)
+                add_log("INFO", "recon", f"{len(endpoints)} endpoints in scope — ready for scanning", req.scan_id)
+
+                state["endpoints_total"] = len(endpoints)
+                state["progress"] = 15
+                await _notify_dashboard(req, state)
+
+                # ─── Persist endpoints to DB ───
+                await _save_endpoints_to_db(req.scan_id, endpoints, req.callback_url, req.callback_token)
+                # Save initial checkpoint (recon done)
+                await _save_checkpoint(req.scan_id, 0, "recon", state, req.callback_url, req.callback_token)
 
             if not endpoints:
                 add_log("WARN", "recon", "No endpoints found in scope — scan complete", req.scan_id)
@@ -407,325 +477,257 @@ async def _run_scan(req: ScanRequest, state: dict):
             state["progress"] = 20
             await _notify_dashboard(req, state)
 
+            # Module list for skip logic on resume
+            MODULE_NAMES = ["idor", "access_control", "info_disclosure", "xss", "sqli", "csrf", "ssrf", "differential"]
+
             # ─── Module 1: IDOR scan ───
             if state.get("status") == "cancelled":
                 return
+            if resume_module >= 1:
+                add_log("INFO", "resume", "Skipping IDOR (already done)", req.scan_id)
+                state["modules_done"] = 1
+                state["progress"] = 25
+            else:
+                state["current_module"] = "idor"
+                add_log("INFO", "idor", f"Starting IDOR scanner on {len(endpoints)} endpoints", req.scan_id)
+                await _notify_dashboard(req, state)
 
-            state["current_module"] = "idor"
-            add_log("INFO", "idor", f"Starting IDOR scanner on {len(endpoints)} endpoints", req.scan_id)
-            await _notify_dashboard(req, state)
+                idor_scanner = IDORScanner(http)
+                idor_tested = 0
+                for ep in endpoints:
+                    if state.get("status") == "cancelled":
+                        break
 
-            idor_scanner = IDORScanner(http)
-            idor_tested = 0
-            for ep in endpoints:
-                if state.get("status") == "cancelled":
-                    break
+                    if not scope_enforcer.is_in_scope(ep.url):
+                        add_log("WARN", "compliance", f"Skipping out-of-scope URL: {ep.url}", req.scan_id)
+                        continue
 
-                # Scope check each URL before scanning
-                if not scope_enforcer.is_in_scope(ep.url):
-                    add_log("WARN", "compliance", f"Skipping out-of-scope URL: {ep.url}", req.scan_id)
-                    continue
+                    path_ids = idor_scanner.extract_path_ids(ep.url)
+                    if path_ids:
+                        add_log("DEBUG", "idor", f"Testing {len(path_ids)} IDs in {ep.url}", req.scan_id)
 
-                path_ids = idor_scanner.extract_path_ids(ep.url)
-                if path_ids:
-                    add_log("DEBUG", "idor", f"Testing {len(path_ids)} IDs in {ep.url}", req.scan_id)
+                    for id_val, _ in path_ids:
+                        candidate = IDORCandidate(
+                            url=ep.url,
+                            method=ep.method,
+                            id_type=IDORType.PATH_ID,
+                            id_param="path",
+                            original_id=id_val,
+                            test_ids=idor_scanner.generate_test_ids(id_val),
+                        )
+                        finding = await idor_scanner.test_idor(candidate, {})
+                        if finding:
+                            entry = {
+                                "module": "idor",
+                                "severity": finding.severity.upper(),
+                                "confidence": 0.7,
+                                "title": f"IDOR: {finding.id_param} in {finding.url}",
+                                "description": finding.description,
+                                "url": finding.url,
+                                "evidence": finding.evidence,
+                            }
+                            findings.append(entry)
+                            sev = finding.severity.lower()
+                            if sev in state["stats"]:
+                                state["stats"][sev] += 1
+                            add_log("ERROR", "idor", f"FOUND IDOR: {finding.url} [{finding.severity}]", req.scan_id)
 
-                for id_val, _ in path_ids:
-                    candidate = IDORCandidate(
-                        url=ep.url,
-                        method=ep.method,
-                        id_type=IDORType.PATH_ID,
-                        id_param="path",
-                        original_id=id_val,
-                        test_ids=idor_scanner.generate_test_ids(id_val),
-                    )
-                    finding = await idor_scanner.test_idor(candidate, {})
-                    if finding:
-                        entry = {
-                            "module": "idor",
-                            "severity": finding.severity.upper(),
-                            "confidence": 0.7,
-                            "title": f"IDOR: {finding.id_param} in {finding.url}",
-                            "description": finding.description,
-                            "url": finding.url,
-                            "evidence": finding.evidence,
-                        }
-                        findings.append(entry)
-                        sev = finding.severity.lower()
-                        if sev in state["stats"]:
-                            state["stats"][sev] += 1
-                        add_log("ERROR", "idor", f"FOUND IDOR: {finding.url} [{finding.severity}]", req.scan_id)
+                    idor_tested += 1
+                    state["endpoints_scanned"] = idor_tested
+                    state["progress"] = 15 + (idor_tested / max(len(endpoints), 1)) * 10
 
-                idor_tested += 1
-                state["endpoints_scanned"] = idor_tested
-                # Update progress: IDOR = 15% to 25%
-                state["progress"] = 15 + (idor_tested / max(len(endpoints), 1)) * 10
-
-            idor_count = len([f for f in findings if f["module"] == "idor"])
-            state["modules_done"] = 1
-            state["progress"] = 25
-            state["findings"] = findings
-            add_log("INFO", "idor", f"IDOR scan complete — {idor_count} findings from {idor_tested} endpoints", req.scan_id)
-            await _notify_dashboard(req, state)
+                idor_count = len([f for f in findings if f["module"] == "idor"])
+                state["modules_done"] = 1
+                state["progress"] = 25
+                state["findings"] = findings
+                add_log("INFO", "idor", f"IDOR scan complete — {idor_count} findings from {idor_tested} endpoints", req.scan_id)
+                await _notify_dashboard(req, state)
+                await _save_checkpoint(req.scan_id, 1, "idor", state, req.callback_url, req.callback_token)
 
             # ─── Module 2: Access Control scan ───
             if state.get("status") == "cancelled":
                 return
+            if resume_module >= 2:
+                add_log("INFO", "resume", "Skipping Access Control (already done)", req.scan_id)
+                state["modules_done"] = 2
+                state["progress"] = 35
+            else:
+                state["current_module"] = "access_control"
+                add_log("INFO", "access_control", f"Starting access control scanner on {target_url}", req.scan_id)
+                await _notify_dashboard(req, state)
 
-            state["current_module"] = "access_control"
-            add_log("INFO", "access_control", f"Starting access control scanner on {target_url}", req.scan_id)
-            await _notify_dashboard(req, state)
+                ac_scanner = AccessControlScanner(http)
 
-            ac_scanner = AccessControlScanner(http)
-
-            # Test admin paths
-            add_log("DEBUG", "access_control", "Probing admin paths...", req.scan_id)
-            ac_findings = await ac_scanner.probe_admin_paths(
-                target_url,
-                unauth_headers={},          # Test unauthenticated access
-                user_headers=scan_headers,   # Test with regular user headers
-            )
-            for f in ac_findings:
-                # Scope check the finding URL
-                if not scope_enforcer.is_in_scope(f.url):
-                    add_log("WARN", "compliance", f"Skipping out-of-scope finding: {f.url}", req.scan_id)
-                    continue
-                entry = {
-                    "module": "access_control",
-                    "severity": f.severity.upper(),
-                    "confidence": 0.7,
-                    "title": f"Access Control: {f.url}",
-                    "description": f.description,
-                    "url": f.url,
-                    "evidence": f.evidence,
-                }
-                findings.append(entry)
-                sev = f.severity.lower()
-                if sev in state["stats"]:
-                    state["stats"][sev] += 1
-                add_log("ERROR", "access_control", f"FOUND: {f.url} [{f.severity}]", req.scan_id)
-
-            # Test method overrides and header bypasses on discovered endpoints
-            add_log("DEBUG", "access_control", "Testing method overrides and header bypasses...", req.scan_id)
-            for ep in endpoints[:20]:  # Cap to avoid excessive requests
-                if state.get("status") == "cancelled":
-                    break
-                if not scope_enforcer.is_in_scope(ep.url):
-                    continue
-                method_finding = await ac_scanner.test_method_override(ep.url, scan_headers)
-                if method_finding:
+                add_log("DEBUG", "access_control", "Probing admin paths...", req.scan_id)
+                ac_findings = await ac_scanner.probe_admin_paths(
+                    target_url,
+                    unauth_headers={},
+                    user_headers=scan_headers,
+                )
+                for f in ac_findings:
+                    if not scope_enforcer.is_in_scope(f.url):
+                        add_log("WARN", "compliance", f"Skipping out-of-scope finding: {f.url}", req.scan_id)
+                        continue
                     entry = {
                         "module": "access_control",
-                        "severity": method_finding.severity.upper(),
+                        "severity": f.severity.upper(),
                         "confidence": 0.7,
-                        "title": f"Method Override: {method_finding.url}",
-                        "description": method_finding.description,
-                        "url": method_finding.url,
-                        "evidence": method_finding.evidence,
+                        "title": f"Access Control: {f.url}",
+                        "description": f.description,
+                        "url": f.url,
+                        "evidence": f.evidence,
                     }
                     findings.append(entry)
-                    sev = method_finding.severity.lower()
+                    sev = f.severity.lower()
                     if sev in state["stats"]:
                         state["stats"][sev] += 1
-                    add_log("ERROR", "access_control", f"FOUND method bypass: {method_finding.url}", req.scan_id)
+                    add_log("ERROR", "access_control", f"FOUND: {f.url} [{f.severity}]", req.scan_id)
 
-                header_findings = await ac_scanner.test_header_bypass(ep.url, scan_headers)
-                for hf in header_findings:
-                    entry = {
-                        "module": "access_control",
-                        "severity": hf.severity.upper(),
-                        "confidence": 0.7,
-                        "title": f"Header Bypass: {hf.url}",
-                        "description": hf.description,
-                        "url": hf.url,
-                        "evidence": hf.evidence,
-                    }
-                    findings.append(entry)
-                    sev = hf.severity.lower()
-                    if sev in state["stats"]:
-                        state["stats"][sev] += 1
-                    add_log("ERROR", "access_control", f"FOUND header bypass: {hf.url}", req.scan_id)
+                add_log("DEBUG", "access_control", "Testing method overrides and header bypasses...", req.scan_id)
+                for ep in endpoints[:20]:
+                    if state.get("status") == "cancelled":
+                        break
+                    if not scope_enforcer.is_in_scope(ep.url):
+                        continue
+                    method_finding = await ac_scanner.test_method_override(ep.url, scan_headers)
+                    if method_finding:
+                        entry = {
+                            "module": "access_control",
+                            "severity": method_finding.severity.upper(),
+                            "confidence": 0.7,
+                            "title": f"Method Override: {method_finding.url}",
+                            "description": method_finding.description,
+                            "url": method_finding.url,
+                            "evidence": method_finding.evidence,
+                        }
+                        findings.append(entry)
+                        sev = method_finding.severity.lower()
+                        if sev in state["stats"]:
+                            state["stats"][sev] += 1
+                        add_log("ERROR", "access_control", f"FOUND method bypass: {method_finding.url}", req.scan_id)
 
-            ac_count = len([f for f in findings if f["module"] == "access_control"])
-            state["modules_done"] = 2
-            state["progress"] = 35
-            state["findings"] = findings
-            add_log("INFO", "access_control", f"Access control scan complete — {ac_count} findings", req.scan_id)
-            await _notify_dashboard(req, state)
+                    header_findings = await ac_scanner.test_header_bypass(ep.url, scan_headers)
+                    for hf in header_findings:
+                        entry = {
+                            "module": "access_control",
+                            "severity": hf.severity.upper(),
+                            "confidence": 0.7,
+                            "title": f"Header Bypass: {hf.url}",
+                            "description": hf.description,
+                            "url": hf.url,
+                            "evidence": hf.evidence,
+                        }
+                        findings.append(entry)
+                        sev = hf.severity.lower()
+                        if sev in state["stats"]:
+                            state["stats"][sev] += 1
+                        add_log("ERROR", "access_control", f"FOUND header bypass: {hf.url}", req.scan_id)
+
+                ac_count = len([f for f in findings if f["module"] == "access_control"])
+                state["modules_done"] = 2
+                state["progress"] = 35
+                state["findings"] = findings
+                add_log("INFO", "access_control", f"Access control scan complete — {ac_count} findings", req.scan_id)
+                await _notify_dashboard(req, state)
+                await _save_checkpoint(req.scan_id, 2, "access_control", state, req.callback_url, req.callback_token)
 
             # ─── Module 3: Info Disclosure scan ───
             if state.get("status") == "cancelled":
                 return
+            if resume_module >= 3:
+                add_log("INFO", "resume", "Skipping Info Disclosure (already done)", req.scan_id)
+                state["modules_done"] = 3
+                state["progress"] = 45
+            else:
+                state["current_module"] = "info_disclosure"
+                add_log("INFO", "info_disclosure", f"Starting info disclosure scanner on {target_url}", req.scan_id)
+                await _notify_dashboard(req, state)
 
-            state["current_module"] = "info_disclosure"
-            add_log("INFO", "info_disclosure", f"Starting info disclosure scanner on {target_url}", req.scan_id)
-            await _notify_dashboard(req, state)
+                id_scanner = InfoDisclosureScanner(http)
 
-            id_scanner = InfoDisclosureScanner(http)
+                add_log("DEBUG", "info_disclosure", "Probing common disclosure endpoints (.env, .git, swagger, etc.)...", req.scan_id)
+                id_findings = await id_scanner.probe_disclosure_endpoints(target_url)
+                for f in id_findings:
+                    if not scope_enforcer.is_in_scope(f.url):
+                        add_log("WARN", "compliance", f"Skipping out-of-scope: {f.url}", req.scan_id)
+                        continue
+                    entry = {
+                        "module": "info_disclosure",
+                        "severity": f.severity.upper(),
+                        "confidence": 0.7,
+                        "title": f"Info Disclosure: {f.disclosure_type}",
+                        "description": f.description,
+                        "url": f.url,
+                        "evidence": f.evidence,
+                    }
+                    findings.append(entry)
+                    sev = f.severity.lower()
+                    if sev in state["stats"]:
+                        state["stats"][sev] += 1
+                    add_log("WARN", "info_disclosure", f"FOUND: {f.disclosure_type} at {f.url} [{f.severity}]", req.scan_id)
 
-            # Probe common disclosure endpoints
-            add_log("DEBUG", "info_disclosure", "Probing common disclosure endpoints (.env, .git, swagger, etc.)...", req.scan_id)
-            id_findings = await id_scanner.probe_disclosure_endpoints(target_url)
-            for f in id_findings:
-                if not scope_enforcer.is_in_scope(f.url):
-                    add_log("WARN", "compliance", f"Skipping out-of-scope: {f.url}", req.scan_id)
-                    continue
-                entry = {
-                    "module": "info_disclosure",
-                    "severity": f.severity.upper(),
-                    "confidence": 0.7,
-                    "title": f"Info Disclosure: {f.disclosure_type}",
-                    "description": f.description,
-                    "url": f.url,
-                    "evidence": f.evidence,
-                }
-                findings.append(entry)
-                sev = f.severity.lower()
-                if sev in state["stats"]:
-                    state["stats"][sev] += 1
-                add_log("WARN", "info_disclosure", f"FOUND: {f.disclosure_type} at {f.url} [{f.severity}]", req.scan_id)
+                add_log("DEBUG", "info_disclosure", "Scanning endpoint responses for sensitive data patterns...", req.scan_id)
+                for ep in endpoints[:30]:
+                    if state.get("status") == "cancelled":
+                        break
+                    if not scope_enforcer.is_in_scope(ep.url):
+                        continue
+                    try:
+                        result = await http.get(ep.url)
+                        if result.body:
+                            response_findings = id_scanner.scan_response(ep.url, result)
+                            for rf in response_findings:
+                                entry = {
+                                    "module": "info_disclosure",
+                                    "severity": rf.severity.upper(),
+                                    "confidence": 0.6,
+                                    "title": f"Info Disclosure: {rf.disclosure_type} in response",
+                                    "description": rf.description,
+                                    "url": rf.url,
+                                    "evidence": rf.evidence,
+                                }
+                                findings.append(entry)
+                                sev = rf.severity.lower()
+                                if sev in state["stats"]:
+                                    state["stats"][sev] += 1
+                                add_log("WARN", "info_disclosure", f"FOUND in response: {rf.disclosure_type} at {rf.url}", req.scan_id)
+                    except Exception:
+                        pass
 
-            # Also scan response bodies of discovered endpoints for sensitive data
-            add_log("DEBUG", "info_disclosure", "Scanning endpoint responses for sensitive data patterns...", req.scan_id)
-            for ep in endpoints[:30]:  # Cap
-                if state.get("status") == "cancelled":
-                    break
-                if not scope_enforcer.is_in_scope(ep.url):
-                    continue
-                try:
-                    result = await http.get(ep.url)
-                    if result.body:
-                        response_findings = id_scanner.scan_response(ep.url, result)
-                        for rf in response_findings:
-                            entry = {
-                                "module": "info_disclosure",
-                                "severity": rf.severity.upper(),
-                                "confidence": 0.6,
-                                "title": f"Info Disclosure: {rf.disclosure_type} in response",
-                                "description": rf.description,
-                                "url": rf.url,
-                                "evidence": rf.evidence,
-                            }
-                            findings.append(entry)
-                            sev = rf.severity.lower()
-                            if sev in state["stats"]:
-                                state["stats"][sev] += 1
-                            add_log("WARN", "info_disclosure", f"FOUND in response: {rf.disclosure_type} at {rf.url}", req.scan_id)
-                except Exception:
-                    pass  # Non-critical — skip unresponsive endpoints
-
-            id_count = len([f for f in findings if f["module"] == "info_disclosure"])
-            state["modules_done"] = 3
-            state["progress"] = 45
-            state["findings"] = findings
-            add_log("INFO", "info_disclosure", f"Info disclosure scan complete — {id_count} findings", req.scan_id)
-            await _notify_dashboard(req, state)
+                id_count = len([f for f in findings if f["module"] == "info_disclosure"])
+                state["modules_done"] = 3
+                state["progress"] = 45
+                state["findings"] = findings
+                add_log("INFO", "info_disclosure", f"Info disclosure scan complete — {id_count} findings", req.scan_id)
+                await _notify_dashboard(req, state)
+                await _save_checkpoint(req.scan_id, 3, "info_disclosure", state, req.callback_url, req.callback_token)
 
             # ─── Module 4: XSS scan ───
             if state.get("status") == "cancelled":
                 return
+            if resume_module >= 4:
+                add_log("INFO", "resume", "Skipping XSS (already done)", req.scan_id)
+                state["modules_done"] = 4
+                state["progress"] = 55
+            else:
+                state["current_module"] = "xss"
+                add_log("INFO", "xss", f"Starting XSS scanner on {len(endpoints[:25])} endpoints", req.scan_id)
+                await _notify_dashboard(req, state)
 
-            state["current_module"] = "xss"
-            add_log("INFO", "xss", f"Starting XSS scanner on {len(endpoints[:25])} endpoints", req.scan_id)
-            await _notify_dashboard(req, state)
-
-            xss_scanner = XSSScanner(http)
-            for ep in endpoints[:25]:
-                if state.get("status") == "cancelled":
-                    break
-                if not scope_enforcer.is_in_scope(ep.url):
-                    continue
-                try:
-                    xss_findings = await xss_scanner.scan_endpoint(ep.url, scan_headers)
-                    for f in xss_findings:
-                        entry = {
-                            "module": "xss",
-                            "severity": f.severity.upper(),
-                            "confidence": 0.7,
-                            "title": f"XSS ({f.xss_type.value}): {f.injection_point}",
-                            "description": f.description,
-                            "url": f.url,
-                            "evidence": f.evidence,
-                        }
-                        findings.append(entry)
-                        sev = f.severity.lower()
-                        if sev in state["stats"]:
-                            state["stats"][sev] += 1
-                        add_log("ERROR", "xss", f"FOUND: {f.xss_type.value} XSS at {f.url} [{f.severity}]", req.scan_id)
-                except Exception:
-                    pass
-
-            xss_count = len([f for f in findings if f["module"] == "xss"])
-            state["modules_done"] = 4
-            state["progress"] = 55
-            state["findings"] = findings
-            add_log("INFO", "xss", f"XSS scan complete — {xss_count} findings", req.scan_id)
-            await _notify_dashboard(req, state)
-
-            # ─── Module 5: SQL Injection scan ───
-            if state.get("status") == "cancelled":
-                return
-
-            state["current_module"] = "sqli"
-            add_log("INFO", "sqli", f"Starting SQLi scanner on {len(endpoints[:20])} endpoints", req.scan_id)
-            await _notify_dashboard(req, state)
-
-            sqli_scanner = SQLiScanner(http)
-            for ep in endpoints[:20]:
-                if state.get("status") == "cancelled":
-                    break
-                if not scope_enforcer.is_in_scope(ep.url):
-                    continue
-                try:
-                    sqli_findings = await sqli_scanner.scan_endpoint(ep.url, scan_headers)
-                    for f in sqli_findings:
-                        entry = {
-                            "module": "sqli",
-                            "severity": f.severity.upper(),
-                            "confidence": 0.8,
-                            "title": f"SQLi ({f.sqli_type.value}): {f.injection_point}",
-                            "description": f.description,
-                            "url": f.url,
-                            "evidence": f.evidence,
-                        }
-                        findings.append(entry)
-                        sev = f.severity.lower()
-                        if sev in state["stats"]:
-                            state["stats"][sev] += 1
-                        add_log("ERROR", "sqli", f"FOUND: {f.sqli_type.value} SQLi at {f.url} [{f.severity}]", req.scan_id)
-                except Exception:
-                    pass
-
-            sqli_count = len([f for f in findings if f["module"] == "sqli"])
-            state["modules_done"] = 5
-            state["progress"] = 65
-            state["findings"] = findings
-            add_log("INFO", "sqli", f"SQLi scan complete — {sqli_count} findings", req.scan_id)
-            await _notify_dashboard(req, state)
-
-            # ─── Module 6: CSRF scan ───
-            if state.get("status") == "cancelled":
-                return
-
-            state["current_module"] = "csrf"
-            add_log("INFO", "csrf", f"Starting CSRF scanner on state-changing endpoints", req.scan_id)
-            await _notify_dashboard(req, state)
-
-            csrf_scanner = CSRFScanner(http)
-            for ep in endpoints[:20]:
-                if state.get("status") == "cancelled":
-                    break
-                if not scope_enforcer.is_in_scope(ep.url):
-                    continue
-                if ep.method.upper() in ("POST", "PUT", "DELETE", "PATCH"):
+                xss_scanner = XSSScanner(http)
+                for ep in endpoints[:25]:
+                    if state.get("status") == "cancelled":
+                        break
+                    if not scope_enforcer.is_in_scope(ep.url):
+                        continue
                     try:
-                        csrf_findings = await csrf_scanner.scan_endpoint(ep.url, ep.method, scan_headers)
-                        for f in csrf_findings:
+                        xss_findings = await xss_scanner.scan_endpoint(ep.url, scan_headers)
+                        for f in xss_findings:
                             entry = {
-                                "module": "csrf",
+                                "module": "xss",
                                 "severity": f.severity.upper(),
-                                "confidence": 0.6,
-                                "title": f"CSRF: {f.missing_protection} at {f.url}",
+                                "confidence": 0.7,
+                                "title": f"XSS ({f.xss_type.value}): {f.injection_point}",
                                 "description": f.description,
                                 "url": f.url,
                                 "evidence": f.evidence,
@@ -734,126 +736,230 @@ async def _run_scan(req: ScanRequest, state: dict):
                             sev = f.severity.lower()
                             if sev in state["stats"]:
                                 state["stats"][sev] += 1
-                            add_log("ERROR", "csrf", f"FOUND: Missing {f.missing_protection} at {f.url} [{f.severity}]", req.scan_id)
+                            add_log("ERROR", "xss", f"FOUND: {f.xss_type.value} XSS at {f.url} [{f.severity}]", req.scan_id)
                     except Exception:
                         pass
 
-            csrf_count = len([f for f in findings if f["module"] == "csrf"])
-            state["modules_done"] = 6
-            state["progress"] = 75
-            state["findings"] = findings
-            add_log("INFO", "csrf", f"CSRF scan complete — {csrf_count} findings", req.scan_id)
-            await _notify_dashboard(req, state)
+                xss_count = len([f for f in findings if f["module"] == "xss"])
+                state["modules_done"] = 4
+                state["progress"] = 55
+                state["findings"] = findings
+                add_log("INFO", "xss", f"XSS scan complete — {xss_count} findings", req.scan_id)
+                await _notify_dashboard(req, state)
+                await _save_checkpoint(req.scan_id, 4, "xss", state, req.callback_url, req.callback_token)
+
+            # ─── Module 5: SQL Injection scan ───
+            if state.get("status") == "cancelled":
+                return
+            if resume_module >= 5:
+                add_log("INFO", "resume", "Skipping SQLi (already done)", req.scan_id)
+                state["modules_done"] = 5
+                state["progress"] = 65
+            else:
+                state["current_module"] = "sqli"
+                add_log("INFO", "sqli", f"Starting SQLi scanner on {len(endpoints[:20])} endpoints", req.scan_id)
+                await _notify_dashboard(req, state)
+
+                sqli_scanner = SQLiScanner(http)
+                for ep in endpoints[:20]:
+                    if state.get("status") == "cancelled":
+                        break
+                    if not scope_enforcer.is_in_scope(ep.url):
+                        continue
+                    try:
+                        sqli_findings = await sqli_scanner.scan_endpoint(ep.url, scan_headers)
+                        for f in sqli_findings:
+                            entry = {
+                                "module": "sqli",
+                                "severity": f.severity.upper(),
+                                "confidence": 0.8,
+                                "title": f"SQLi ({f.sqli_type.value}): {f.injection_point}",
+                                "description": f.description,
+                                "url": f.url,
+                                "evidence": f.evidence,
+                            }
+                            findings.append(entry)
+                            sev = f.severity.lower()
+                            if sev in state["stats"]:
+                                state["stats"][sev] += 1
+                            add_log("ERROR", "sqli", f"FOUND: {f.sqli_type.value} SQLi at {f.url} [{f.severity}]", req.scan_id)
+                    except Exception:
+                        pass
+
+                sqli_count = len([f for f in findings if f["module"] == "sqli"])
+                state["modules_done"] = 5
+                state["progress"] = 65
+                state["findings"] = findings
+                add_log("INFO", "sqli", f"SQLi scan complete — {sqli_count} findings", req.scan_id)
+                await _notify_dashboard(req, state)
+                await _save_checkpoint(req.scan_id, 5, "sqli", state, req.callback_url, req.callback_token)
+
+            # ─── Module 6: CSRF scan ───
+            if state.get("status") == "cancelled":
+                return
+            if resume_module >= 6:
+                add_log("INFO", "resume", "Skipping CSRF (already done)", req.scan_id)
+                state["modules_done"] = 6
+                state["progress"] = 75
+            else:
+                state["current_module"] = "csrf"
+                add_log("INFO", "csrf", f"Starting CSRF scanner on state-changing endpoints", req.scan_id)
+                await _notify_dashboard(req, state)
+
+                csrf_scanner = CSRFScanner(http)
+                for ep in endpoints[:20]:
+                    if state.get("status") == "cancelled":
+                        break
+                    if not scope_enforcer.is_in_scope(ep.url):
+                        continue
+                    if ep.method.upper() in ("POST", "PUT", "DELETE", "PATCH"):
+                        try:
+                            csrf_findings = await csrf_scanner.scan_endpoint(ep.url, ep.method, scan_headers)
+                            for f in csrf_findings:
+                                entry = {
+                                    "module": "csrf",
+                                    "severity": f.severity.upper(),
+                                    "confidence": 0.6,
+                                    "title": f"CSRF: {f.missing_protection} at {f.url}",
+                                    "description": f.description,
+                                    "url": f.url,
+                                    "evidence": f.evidence,
+                                }
+                                findings.append(entry)
+                                sev = f.severity.lower()
+                                if sev in state["stats"]:
+                                    state["stats"][sev] += 1
+                                add_log("ERROR", "csrf", f"FOUND: Missing {f.missing_protection} at {f.url} [{f.severity}]", req.scan_id)
+                        except Exception:
+                            pass
+
+                csrf_count = len([f for f in findings if f["module"] == "csrf"])
+                state["modules_done"] = 6
+                state["progress"] = 75
+                state["findings"] = findings
+                add_log("INFO", "csrf", f"CSRF scan complete — {csrf_count} findings", req.scan_id)
+                await _notify_dashboard(req, state)
+                await _save_checkpoint(req.scan_id, 6, "csrf", state, req.callback_url, req.callback_token)
 
             # ─── Module 7: SSRF scan ───
             if state.get("status") == "cancelled":
                 return
+            if resume_module >= 7:
+                add_log("INFO", "resume", "Skipping SSRF (already done)", req.scan_id)
+                state["modules_done"] = 7
+                state["progress"] = 82
+            else:
+                state["current_module"] = "ssrf"
+                add_log("INFO", "ssrf", f"Starting SSRF scanner on {target_url}", req.scan_id)
+                await _notify_dashboard(req, state)
 
-            state["current_module"] = "ssrf"
-            add_log("INFO", "ssrf", f"Starting SSRF scanner on {target_url}", req.scan_id)
-            await _notify_dashboard(req, state)
+                ssrf_scanner = SSRFScanner(http)
 
-            ssrf_scanner = SSRFScanner(http)
+                # Probe common SSRF-prone paths
+                ssrf_findings = await ssrf_scanner.probe_common_ssrf_endpoints(target_url, scan_headers)
+                for f in ssrf_findings:
+                    if not scope_enforcer.is_in_scope(f.url):
+                        continue
+                    entry = {
+                        "module": "ssrf",
+                        "severity": f.severity.upper(),
+                        "confidence": 0.7,
+                        "title": f"SSRF: {f.injection_point}",
+                        "description": f.description,
+                        "url": f.url,
+                        "evidence": f.evidence,
+                    }
+                    findings.append(entry)
+                    sev = f.severity.lower()
+                    if sev in state["stats"]:
+                        state["stats"][sev] += 1
+                    add_log("ERROR", "ssrf", f"FOUND: SSRF at {f.url} [{f.severity}]", req.scan_id)
 
-            # Probe common SSRF-prone paths
-            ssrf_findings = await ssrf_scanner.probe_common_ssrf_endpoints(target_url, scan_headers)
-            for f in ssrf_findings:
-                if not scope_enforcer.is_in_scope(f.url):
-                    continue
-                entry = {
-                    "module": "ssrf",
-                    "severity": f.severity.upper(),
-                    "confidence": 0.7,
-                    "title": f"SSRF: {f.injection_point}",
-                    "description": f.description,
-                    "url": f.url,
-                    "evidence": f.evidence,
-                }
-                findings.append(entry)
-                sev = f.severity.lower()
-                if sev in state["stats"]:
-                    state["stats"][sev] += 1
-                add_log("ERROR", "ssrf", f"FOUND: SSRF at {f.url} [{f.severity}]", req.scan_id)
+                # Also test discovered endpoints with URL-like params
+                for ep in endpoints[:15]:
+                    if state.get("status") == "cancelled":
+                        break
+                    if not scope_enforcer.is_in_scope(ep.url):
+                        continue
+                    try:
+                        ep_ssrf_findings = await ssrf_scanner.scan_endpoint(ep.url, scan_headers)
+                        for f in ep_ssrf_findings:
+                            entry = {
+                                "module": "ssrf",
+                                "severity": f.severity.upper(),
+                                "confidence": 0.7,
+                                "title": f"SSRF: {f.injection_point}",
+                                "description": f.description,
+                                "url": f.url,
+                                "evidence": f.evidence,
+                            }
+                            findings.append(entry)
+                            sev = f.severity.lower()
+                            if sev in state["stats"]:
+                                state["stats"][sev] += 1
+                            add_log("ERROR", "ssrf", f"FOUND: SSRF via param at {f.url} [{f.severity}]", req.scan_id)
+                    except Exception:
+                        pass
 
-            # Also test discovered endpoints with URL-like params
-            for ep in endpoints[:15]:
-                if state.get("status") == "cancelled":
-                    break
-                if not scope_enforcer.is_in_scope(ep.url):
-                    continue
-                try:
-                    ep_ssrf_findings = await ssrf_scanner.scan_endpoint(ep.url, scan_headers)
-                    for f in ep_ssrf_findings:
-                        entry = {
-                            "module": "ssrf",
-                            "severity": f.severity.upper(),
-                            "confidence": 0.7,
-                            "title": f"SSRF: {f.injection_point}",
-                            "description": f.description,
-                            "url": f.url,
-                            "evidence": f.evidence,
-                        }
-                        findings.append(entry)
-                        sev = f.severity.lower()
-                        if sev in state["stats"]:
-                            state["stats"][sev] += 1
-                        add_log("ERROR", "ssrf", f"FOUND: SSRF via param at {f.url} [{f.severity}]", req.scan_id)
-                except Exception:
-                    pass
-
-            ssrf_count = len([f for f in findings if f["module"] == "ssrf"])
-            state["modules_done"] = 7
-            state["progress"] = 82
-            state["findings"] = findings
-            add_log("INFO", "ssrf", f"SSRF scan complete — {ssrf_count} findings", req.scan_id)
-            await _notify_dashboard(req, state)
+                ssrf_count = len([f for f in findings if f["module"] == "ssrf"])
+                state["modules_done"] = 7
+                state["progress"] = 82
+                state["findings"] = findings
+                add_log("INFO", "ssrf", f"SSRF scan complete — {ssrf_count} findings", req.scan_id)
+                await _notify_dashboard(req, state)
+                await _save_checkpoint(req.scan_id, 7, "ssrf", state, req.callback_url, req.callback_token)
 
             # ─── Module 8: Differential scanner ───
             if state.get("status") == "cancelled":
                 return
+            if resume_module >= 8:
+                add_log("INFO", "resume", "Skipping Differential (already done)", req.scan_id)
+                state["modules_done"] = 8
+                state["progress"] = 90
+            else:
+                state["current_module"] = "differential"
+                add_log("INFO", "differential", f"Starting differential scanner on {len(endpoints)} endpoints", req.scan_id)
+                await _notify_dashboard(req, state)
 
-            state["current_module"] = "differential"
-            add_log("INFO", "differential", f"Starting differential scanner on {len(endpoints)} endpoints", req.scan_id)
-            await _notify_dashboard(req, state)
+                diff_scanner = DifferentialScanner(http)
 
-            diff_scanner = DifferentialScanner(http)
+                # Test endpoints with anonymous vs authenticated comparison
+                diff_endpoints = [ep for ep in endpoints[:20] if scope_enforcer.is_in_scope(ep.url)]
+                for ep in diff_endpoints:
+                    if state.get("status") == "cancelled":
+                        break
+                    try:
+                        diff_findings = await diff_scanner.scan_endpoint(
+                            ep.url,
+                            method=ep.method if hasattr(ep, "method") else "GET",
+                            anon_headers={},
+                            user_headers=scan_headers,
+                        )
+                        for f in diff_findings:
+                            entry = {
+                                "module": "differential",
+                                "severity": f.severity.upper(),
+                                "confidence": 0.7,
+                                "title": f"Differential: {f.finding_type} on {urlparse(f.url).path}",
+                                "description": f.description,
+                                "url": f.url,
+                                "evidence": f.evidence,
+                            }
+                            findings.append(entry)
+                            sev = f.severity.lower()
+                            if sev in state["stats"]:
+                                state["stats"][sev] += 1
+                            add_log("ERROR", "differential", f"FOUND: {f.finding_type} at {f.url} [{f.severity}]", req.scan_id)
+                    except Exception:
+                        pass
 
-            # Test endpoints with anonymous vs authenticated comparison
-            diff_endpoints = [ep for ep in endpoints[:20] if scope_enforcer.is_in_scope(ep.url)]
-            for ep in diff_endpoints:
-                if state.get("status") == "cancelled":
-                    break
-                try:
-                    diff_findings = await diff_scanner.scan_endpoint(
-                        ep.url,
-                        method=ep.method if hasattr(ep, "method") else "GET",
-                        anon_headers={},
-                        user_headers=scan_headers,
-                    )
-                    for f in diff_findings:
-                        entry = {
-                            "module": "differential",
-                            "severity": f.severity.upper(),
-                            "confidence": 0.7,
-                            "title": f"Differential: {f.finding_type} on {urlparse(f.url).path}",
-                            "description": f.description,
-                            "url": f.url,
-                            "evidence": f.evidence,
-                        }
-                        findings.append(entry)
-                        sev = f.severity.lower()
-                        if sev in state["stats"]:
-                            state["stats"][sev] += 1
-                        add_log("ERROR", "differential", f"FOUND: {f.finding_type} at {f.url} [{f.severity}]", req.scan_id)
-                except Exception:
-                    pass
-
-            diff_count = len([f for f in findings if f["module"] == "differential"])
-            state["modules_done"] = 8
-            state["progress"] = 90
-            state["findings"] = findings
-            add_log("INFO", "differential", f"Differential scan complete — {diff_count} findings", req.scan_id)
-            await _notify_dashboard(req, state)
+                diff_count = len([f for f in findings if f["module"] == "differential"])
+                state["modules_done"] = 8
+                state["progress"] = 90
+                state["findings"] = findings
+                add_log("INFO", "differential", f"Differential scan complete — {diff_count} findings", req.scan_id)
+                await _notify_dashboard(req, state)
+                await _save_checkpoint(req.scan_id, 8, "differential", state, req.callback_url, req.callback_token)
 
         # ═══════════════════════════════════════════
         # Phase 3: Report

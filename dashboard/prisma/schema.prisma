@@ -59,9 +59,11 @@ model Scan {
   stats       Json       @default("{}")
   programId   String?
   program     Program?   @relation(fields: [programId], references: [id])
-  findings    Finding[]
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  findings       Finding[]
+  crawlEndpoints CrawlEndpoint[]
+  checkpoint     ScanCheckpoint?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 
   @@index([status])
   @@index([target])
@@ -118,6 +120,39 @@ enum FindingStatus {
   FIXED
   ACCEPTED
   REPORTED
+}
+
+// ── Crawl Endpoints (persisted during recon) ──
+
+model CrawlEndpoint {
+  id        String   @id @default(cuid())
+  scanId    String
+  scan      Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  url       String
+  method    String   @default("GET")
+  params    Json     @default("[]")
+  source    String?  // e.g. "sitemap", "crawler", "js_mining"
+  createdAt DateTime @default(now())
+
+  @@index([scanId])
+  @@unique([scanId, url, method])
+}
+
+// ── Scan Checkpoints (resume support) ──
+
+model ScanCheckpoint {
+  id             String   @id @default(cuid())
+  scanId         String   @unique
+  scan           Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  lastModule     Int      @default(0) // 0-8, index of last completed module
+  lastModuleName String   @default("")
+  endpointsTotal Int      @default(0)
+  findingsCount  Int      @default(0)
+  stats          Json     @default("{}")
+  phase          String   @default("recon")
+  progress       Float    @default(0)
+  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now())
 }
 
 // ── Reports ──

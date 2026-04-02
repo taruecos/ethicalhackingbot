@@ -38,6 +38,20 @@ interface QueuedScan {
   createdAt: string;
 }
 
+interface RelaunchableScan {
+  id: string;
+  target: string;
+  status: string;
+  programName: string | null;
+  hasCheckpoint: boolean;
+  lastModule: string | null;
+  lastModuleIndex: number;
+  endpointsCount: number;
+  findingsCount: number;
+  finishedAt: string;
+  error: string | null;
+}
+
 interface ScanProgress {
   id: string;
   target: string;
@@ -136,7 +150,9 @@ interface ComplianceData {
 export default function LiveMonitorPage() {
   const [activeScans, setActiveScans] = useState<ScanProgress[]>([]);
   const [queuedScans, setQueuedScans] = useState<QueuedScan[]>([]);
+  const [relaunchableScans, setRelaunchableScans] = useState<RelaunchableScan[]>([]);
   const [startingId, setStartingId] = useState<string | null>(null);
+  const [relaunchingId, setRelaunchingId] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [botOnline, setBotOnline] = useState(false);
@@ -158,6 +174,7 @@ export default function LiveMonitorPage() {
         setBotOnline(data.online);
         if (data.activeScans) setActiveScans(data.activeScans);
                 if (data.queuedScans) setQueuedScans(data.queuedScans);
+        if (data.relaunchableScans) setRelaunchableScans(data.relaunchableScans);
         if (data.metrics) setMetrics(data.metrics);
         if (data.logs && data.logs.length > 0) {
           setLogs((prev) => {
@@ -224,6 +241,32 @@ export default function LiveMonitorPage() {
       console.error("[Compliance] fetch failed:", err);
     } finally {
       setComplianceLoading(null);
+    }
+  }
+
+  async function relaunchScan(scanId: string, resume: boolean) {
+    setRelaunchingId(scanId);
+    try {
+      // Step 1: relaunch (sets status to QUEUED, preserves checkpoint if resume)
+      const relaunchRes = await fetch(`/api/scans/${scanId}/relaunch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resume }),
+      });
+      if (!relaunchRes.ok) return;
+      const relaunchData = await relaunchRes.json();
+      const targetId = relaunchData.id || scanId;
+
+      // Step 2: start the scan (triggers scanner service)
+      const startRes = await fetch(`/api/scans/${targetId}/start`, { method: "POST" });
+      if (startRes.ok) {
+        setRelaunchableScans((prev) => prev.filter((s) => s.id !== scanId));
+        fetchStatus();
+      }
+    } catch {
+      // silent
+    } finally {
+      setRelaunchingId(null);
     }
   }
 
@@ -502,8 +545,94 @@ export default function LiveMonitorPage() {
         </div>
       )}
 
+      {/* Relaunchable Scans (completed/errored/cancelled) */}
+      {relaunchableScans.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-[10px] uppercase tracking-widest text-[var(--dim)] font-semibold">
+            Recent Scans ({relaunchableScans.length})
+          </h3>
+          {relaunchableScans.map((scan) => (
+            <div
+              key={scan.id}
+              className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3 sm:p-4 flex flex-wrap items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-3">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                  scan.status === "COMPLETE"
+                    ? "bg-[var(--accent)]/15"
+                    : scan.status === "ERROR"
+                    ? "bg-[var(--red)]/15"
+                    : "bg-[var(--orange)]/15"
+                }`}>
+                  {scan.status === "COMPLETE" ? (
+                    <CheckCircle2 className={`w-4 h-4 text-[var(--accent)]`} />
+                  ) : scan.status === "ERROR" ? (
+                    <AlertTriangle className={`w-4 h-4 text-[var(--red)]`} />
+                  ) : (
+                    <Ban className={`w-4 h-4 text-[var(--orange)]`} />
+                  )}
+                </div>
+                <div>
+                  <p className="text-sm font-bold">{scan.target}</p>
+                  <p className="text-xs text-[var(--dim)]">
+                    {scan.programName || "Manual scan"}
+                    {" • "}
+                    <span className={
+                      scan.status === "ERROR" ? "text-[var(--red)]" :
+                      scan.status === "CANCELLED" ? "text-[var(--orange)]" :
+                      "text-[var(--accent)]"
+                    }>
+                      {scan.status}
+                    </span>
+                    {" • "}
+                    {scan.findingsCount} findings
+                    {scan.endpointsCount > 0 && ` • ${scan.endpointsCount} endpoints`}
+                  </p>
+                  {scan.hasCheckpoint && scan.lastModule && (
+                    <p className="text-[10px] text-[var(--blue)]">
+                      Checkpoint: module {scan.lastModuleIndex}/8 ({scan.lastModule})
+                    </p>
+                  )}
+                  {scan.error && (
+                    <p className="text-[10px] text-[var(--red)] truncate max-w-xs">{scan.error}</p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {scan.hasCheckpoint && scan.endpointsCount > 0 && (
+                  <button
+                    onClick={() => relaunchScan(scan.id, true)}
+                    disabled={relaunchingId === scan.id}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--blue)]/15 text-[var(--blue)] text-xs font-bold hover:bg-[var(--blue)]/25 transition-colors disabled:opacity-50"
+                  >
+                    {relaunchingId === scan.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Play className="w-3.5 h-3.5" />
+                    )}
+                    Resume
+                  </button>
+                )}
+                <button
+                  onClick={() => relaunchScan(scan.id, false)}
+                  disabled={relaunchingId === scan.id}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--surface2)] text-[var(--dim)] text-xs font-medium hover:text-[var(--text)] transition-colors disabled:opacity-50"
+                >
+                  {relaunchingId === scan.id ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  )}
+                  Fresh Scan
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* No scans at all */}
-      {activeScans.length === 0 && queuedScans.length === 0 && !loading && (
+      {activeScans.length === 0 && queuedScans.length === 0 && relaunchableScans.length === 0 && !loading && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-8 text-center">
           <Activity className="w-8 h-8 text-[var(--dim)] mx-auto mb-3" />
           <p className="text-sm text-[var(--dim)]">No scans in queue</p>
