@@ -208,9 +208,20 @@ async def _notify_dashboard(req: ScanRequest, scan_state: dict, event: str = "pr
     """Send progress update to Next.js dashboard."""
     if not req.callback_url:
         return
+
+    # Validate callback URL scope — only allow HTTPS to known dashboard origins
+    parsed_cb = urlparse(req.callback_url)
+    allowed_hosts = {"localhost", "127.0.0.1", "dashboard.ethicalhackingbot.com"}
+    if parsed_cb.hostname not in allowed_hosts and not (parsed_cb.hostname or "").endswith(".vercel.app"):
+        logger.warning(f"Callback URL blocked — host {parsed_cb.hostname!r} not in allowed scope")
+        return
+    if parsed_cb.scheme not in ("https", "http"):
+        logger.warning(f"Callback URL blocked — scheme {parsed_cb.scheme!r} not allowed")
+        return
+
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
             headers = {}
             if req.callback_token:
                 headers["Authorization"] = f"Bearer {req.callback_token}"
@@ -285,6 +296,13 @@ async def _run_scan(req: ScanRequest, state: dict):
                 add_log("INFO", "compliance", f"Custom header: {key.strip()}", req.scan_id)
         if roe.safeHarbour:
             add_log("INFO", "compliance", "Safe harbour policy confirmed by program", req.scan_id)
+        else:
+            add_log("CRITICAL", "compliance", "BLOCKED: No safe harbour protection — scan aborted. Cannot proceed without legal safe harbour.", req.scan_id)
+            state["status"] = "blocked"
+            state["phase"] = "compliance"
+            state["error"] = "No safe harbour protection. Scan blocked for legal safety."
+            await _notify_dashboard(req, state, "error")
+            return
 
     request_delay = max(60.0 / req.rate_limit, 1.0)
     add_log("INFO", "compliance", f"Rate limit: {req.rate_limit} req/min (delay: {request_delay:.1f}s)", req.scan_id)
@@ -299,7 +317,7 @@ async def _run_scan(req: ScanRequest, state: dict):
         add_log("INFO", "recon", f"Starting crawl on {target_url} (depth: {req.depth})", req.scan_id)
         await _notify_dashboard(req, state)
 
-        async with HttpClient(concurrency=3, request_delay=request_delay, timeout=30, headers=scan_headers) as http:
+        async with HttpClient(concurrency=3, request_delay=request_delay, timeout=30, headers=scan_headers, scope_enforcer=scope_enforcer) as http:
             crawler = EndpointCrawler(http, max_depth=3, scope_enforcer=scope_enforcer)
             endpoints = await crawler.crawl(target_url)
             add_log("INFO", "recon", f"Crawler found {len(endpoints)} raw endpoints", req.scan_id)
