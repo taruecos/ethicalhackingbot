@@ -314,13 +314,63 @@ async def _run_scan(req: ScanRequest, state: dict):
         state["phase"] = "recon"
         state["progress"] = 5
         state["current_module"] = "crawler"
-        add_log("INFO", "recon", f"Starting crawl on {target_url} (depth: {req.depth})", req.scan_id)
+
+        # Build seed URLs — if target_url isn't a real domain, use scope entries
+        seed_urls = []
+        parsed_target = urlparse(target_url)
+        target_host = parsed_target.hostname or ""
+        # Check if target resolves to something real (has a TLD)
+        if "." in target_host:
+            seed_urls = [target_url]
+        else:
+            # Target is a program name (e.g. "MyToyota"), not a domain
+            # Use scope entries as seed URLs
+            for entry in scope_entries:
+                entry_clean = entry.strip().lower()
+                if entry_clean.startswith("*."):
+                    # Wildcard — use the base domain (e.g. *.toyota.com → toyota.com)
+                    base_domain = entry_clean[2:]
+                    seed_urls.append(f"https://{base_domain}")
+                elif not entry_clean.startswith(("http://", "https://")):
+                    seed_urls.append(f"https://{entry_clean}")
+                else:
+                    seed_urls.append(entry_clean)
+            # Deduplicate
+            seed_urls = list(dict.fromkeys(seed_urls))
+            add_log("INFO", "recon", f"Target '{req.domain}' is not a domain — using {len(seed_urls)} scope domains as seed URLs", req.scan_id)
+
+        if not seed_urls:
+            add_log("CRITICAL", "recon", "No valid seed URLs — cannot crawl", req.scan_id)
+            state["status"] = "error"
+            state["error"] = "No valid seed URLs to crawl"
+            await _notify_dashboard(req, state, "error")
+            return
+
+        add_log("INFO", "recon", f"Starting crawl on {len(seed_urls)} seed URL(s) (depth: {req.depth})", req.scan_id)
+        for url in seed_urls[:5]:
+            add_log("DEBUG", "recon", f"Seed: {url}", req.scan_id)
+        if len(seed_urls) > 5:
+            add_log("DEBUG", "recon", f"... and {len(seed_urls) - 5} more seeds", req.scan_id)
         await _notify_dashboard(req, state)
 
         async with HttpClient(concurrency=3, request_delay=request_delay, timeout=30, headers=scan_headers, scope_enforcer=scope_enforcer) as http:
             crawler = EndpointCrawler(http, max_depth=3, scope_enforcer=scope_enforcer)
-            endpoints = await crawler.crawl(target_url)
-            add_log("INFO", "recon", f"Crawler found {len(endpoints)} raw endpoints", req.scan_id)
+            endpoints = []
+            for seed_url in seed_urls:
+                add_log("INFO", "recon", f"Crawling {seed_url}...", req.scan_id)
+                eps = await crawler.crawl(seed_url)
+                add_log("INFO", "recon", f"  → {len(eps)} endpoints from {seed_url}", req.scan_id)
+                endpoints.extend(eps)
+            # Deduplicate across all seeds
+            seen = set()
+            unique_endpoints = []
+            for ep in endpoints:
+                key = (ep.url, ep.method)
+                if key not in seen:
+                    seen.add(key)
+                    unique_endpoints.append(ep)
+            endpoints = unique_endpoints
+            add_log("INFO", "recon", f"Crawler found {len(endpoints)} raw endpoints (across {len(seed_urls)} seeds)", req.scan_id)
 
             # Log some discovered endpoints for visibility
             for ep in endpoints[:10]:
