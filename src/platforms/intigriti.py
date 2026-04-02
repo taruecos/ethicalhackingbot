@@ -7,24 +7,29 @@ from typing import Optional
 BASE_URL = "https://api.intigriti.com/external/researcher/v1"
 
 
-def _load_token_from_config() -> str:
-    """Fallback: read token from config.yaml if env var not set."""
+def _load_from_config(key: str) -> str:
+    """Fallback: read a value from config.yaml if env var not set."""
     try:
         import yaml
         config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
         if config_path.exists():
             data = yaml.safe_load(config_path.read_text())
-            return data.get("platforms", {}).get("intigriti", {}).get("api_key", "")
+            return data.get("platforms", {}).get("intigriti", {}).get(key, "")
     except Exception:
         pass
     return ""
 
 
+def _load_token_from_config() -> str:
+    return _load_from_config("api_key")
+
+
 class IntigritiClient:
     """Client for the Intigriti Researcher API (v1.0 Beta)."""
 
-    def __init__(self, api_token: Optional[str] = None):
+    def __init__(self, api_token: Optional[str] = None, username: Optional[str] = None):
         self.token = api_token or os.environ.get("INTIGRITI_API_TOKEN", "") or _load_token_from_config()
+        self.username = username or os.environ.get("INTIGRITI_USERNAME", "") or _load_from_config("username")
         self.headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json",
@@ -128,14 +133,22 @@ class IntigritiClient:
         else:
             tooling_status = "conditional"
 
+        user_agent = testing.get("userAgent")
+        if user_agent and self.username:
+            if "{username}" in user_agent.lower():
+                user_agent = user_agent.replace("{username}", self.username)
+            elif self.username not in user_agent:
+                user_agent = f"{user_agent}-{self.username}"
+
         return {
             "automated_tooling": automated,
             "automated_tooling_status": tooling_status,
             "safe_harbour": content.get("safeHarbour", False) if isinstance(content, dict) else False,
-            "user_agent": testing.get("userAgent"),
+            "user_agent": user_agent,
             "request_header": testing.get("requestHeader"),
             "description": content.get("description", "") if isinstance(content, dict) else "",
             "intigriti_me": testing.get("intigritiMe", False),
+            "username": self.username,
         }
 
     def normalize_program(self, raw: dict) -> dict:

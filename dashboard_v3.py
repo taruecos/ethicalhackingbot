@@ -1407,6 +1407,7 @@ window._viewProgram = function(pid) {
     html += '<div class="modal-section"><h3>Compliance</h3><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">';
     html += complianceBadge(comp) + safeHarbourBadge(comp);
     html += '</div>';
+    if (comp.username) html += '<div class="modal-field" style="margin-bottom:4px"><span style="color:var(--dim)">Intigriti Account:</span> <span style="color:var(--accent)">'+esc(comp.username)+'</span></div>';
     if (comp.user_agent) html += '<div class="modal-field" style="margin-bottom:4px"><span style="color:var(--dim)">Required User-Agent:</span> '+esc(comp.user_agent)+'</div>';
     if (comp.request_header) html += '<div class="modal-field" style="margin-bottom:4px"><span style="color:var(--dim)">Required Header:</span> '+esc(comp.request_header)+'</div>';
     if (comp.description) html += '<div class="modal-field" style="font-size:0.8rem;max-height:100px;overflow-y:auto;margin-top:8px">'+esc(comp.description)+'</div>';

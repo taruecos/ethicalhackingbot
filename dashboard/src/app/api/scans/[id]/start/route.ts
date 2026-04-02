@@ -64,17 +64,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         : [scan.target, `*.${scan.target}`];
 
     // Build ROE: program compliance > config ROE > null
+    const automatedToolingStatus = compliance
+      ? (compliance.automatedToolingStatus as string) || (compliance.automated_tooling_status as string) || null
+      : null;
+
+    // HARD BLOCK: refuse to start if automated tooling is not allowed
+    if (automatedToolingStatus === "not_allowed") {
+      return NextResponse.json(
+        { error: "BLOCKED — automated tooling is NOT ALLOWED by this program. Scan cannot proceed." },
+        { status: 403 }
+      );
+    }
+
     const roe = compliance
       ? {
           userAgent: compliance.userAgent || null,
           requestHeader: compliance.requestHeader || null,
           safeHarbour: compliance.safeHarbour || null,
+          automatedTooling: automatedToolingStatus,
         }
       : configRoe
         ? {
             userAgent: configRoe.userAgent || null,
             requestHeader: configRoe.requestHeader || null,
             safeHarbour: configRoe.safeHarbour || null,
+            automatedTooling: null,
           }
         : null;
 

@@ -63,6 +63,7 @@ class RulesOfEngagement(BaseModel):
     userAgent: str | None = None
     requestHeader: str | None = None
     safeHarbour: bool | None = None
+    automatedTooling: str | None = None  # "allowed", "not_allowed", "conditional", "unknown"
 
 
 class ScanRequest(BaseModel):
@@ -243,6 +244,17 @@ async def _run_scan(req: ScanRequest, state: dict):
     findings = []
 
     # ═══════════════════════════════════════════
+    # Automated Tooling Gate — HARD BLOCK
+    # ═══════════════════════════════════════════
+    if req.rules_of_engagement and req.rules_of_engagement.automatedTooling == "not_allowed":
+        add_log("CRITICAL", "compliance", "SCAN BLOCKED — automated tooling is NOT ALLOWED by this program", req.scan_id)
+        state["status"] = "blocked"
+        state["phase"] = "compliance_blocked"
+        state["progress"] = 0
+        await _notify_dashboard(req, state, "error")
+        return
+
+    # ═══════════════════════════════════════════
     # Scope Enforcement — COMPLIANCE GATE
     # ═══════════════════════════════════════════
     scope_entries = req.scope or []
@@ -284,7 +296,7 @@ async def _run_scan(req: ScanRequest, state: dict):
         await _notify_dashboard(req, state)
 
         async with HttpClient(concurrency=3, request_delay=request_delay, timeout=30, headers=scan_headers) as http:
-            crawler = EndpointCrawler(http, max_depth=3)
+            crawler = EndpointCrawler(http, max_depth=3, scope_enforcer=scope_enforcer)
             endpoints = await crawler.crawl(target_url)
             add_log("INFO", "recon", f"Crawler found {len(endpoints)} raw endpoints", req.scan_id)
 

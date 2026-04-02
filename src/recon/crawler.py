@@ -9,6 +9,7 @@ from collections import deque
 from bs4 import BeautifulSoup
 
 from src.utils.http_client import HttpClient
+from src.scope.enforcer import ScopeEnforcer
 
 
 @dataclass
@@ -26,9 +27,10 @@ class Endpoint:
 class EndpointCrawler:
     """Crawls a target to discover API endpoints."""
 
-    def __init__(self, http_client: HttpClient, max_depth: int = 3):
+    def __init__(self, http_client: HttpClient, max_depth: int = 3, scope_enforcer: ScopeEnforcer | None = None):
         self._http = http_client
         self._max_depth = max_depth
+        self._scope = scope_enforcer
         self._visited: set[str] = set()
         self._endpoints: list[Endpoint] = []
 
@@ -51,7 +53,11 @@ class EndpointCrawler:
             if urlparse(url).netloc != domain:
                 continue
 
-            result = await self._http.get(url, headers=auth_headers or {})
+            # Scope check BEFORE making any request
+            if self._scope and not self._scope.is_in_scope(url):
+                continue
+
+            result = await self._http.get(url, headers=auth_headers)
             if result.error or result.status_code >= 400:
                 continue
 

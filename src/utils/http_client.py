@@ -58,12 +58,17 @@ class HttpClient:
         cookies: dict | None = None,
     ) -> RequestResult:
         """Send a rate-limited HTTP request."""
+        # Merge per-request headers with defaults — compliance headers (User-Agent, etc.)
+        # from _default_headers always win and cannot be overridden by per-request headers
+        merged_headers = dict(headers) if headers else {}
+        merged_headers.update(self._default_headers)
+
         async with self._limiter:
             try:
                 response = await self._client.request(
                     method=method,
                     url=url,
-                    headers=headers,
+                    headers=merged_headers,
                     params=params,
                     json=json,
                     content=data,
