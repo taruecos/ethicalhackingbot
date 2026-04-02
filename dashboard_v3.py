@@ -132,6 +132,59 @@ async def start_scan(request: Request, token: str = Depends(check_auth_flexible)
     asyncio.create_task(_run_scan(scan_id, domain))
     return {"scan_id": scan_id, "domain": domain, "status": "started"}
 
+async def _resolve_scan_targets(domain: str, scan_id: str) -> list[str]:
+    """Resolve domain to actual scan targets. If domain has no TLD (program name), extract scope domains."""
+    from urllib.parse import urlparse
+    # Check if it's a real domain (has a TLD)
+    test_url = f"https://{domain}" if not domain.startswith("http") else domain
+    parsed = urlparse(test_url)
+    host = parsed.hostname or ""
+    if "." in host:
+        return [domain]  # Real domain, use as-is
+
+    # It's a program name (e.g. "MyToyota") — resolve from cached programs
+    add_bot_log("INFO", "scanner", f"'{domain}' is a program name, resolving scope domains...", scan_id)
+    cache_dir = Path("/root/ethicalhackingbot/cache")
+    targets = []
+    if cache_dir.exists():
+        for f in cache_dir.glob("*.json"):
+            try:
+                data = json.loads(f.read_text())
+                programs = data if isinstance(data, list) else [data]
+                for prog in programs:
+                    prog_name = (prog.get("name") or prog.get("title") or "").strip()
+                    if prog_name.lower() == domain.lower() or prog_name.replace(" ", "").lower() == domain.lower():
+                        # Found the program — extract scope domains
+                        dom_data = prog.get("domains", {})
+                        entries = dom_data.get("content", []) if isinstance(dom_data, dict) else (dom_data if isinstance(dom_data, list) else [])
+                        for entry in entries:
+                            endpoint = entry.get("endpoint", "") if isinstance(entry, dict) else str(entry)
+                            if endpoint and endpoint.strip():
+                                ep = endpoint.strip()
+                                if ep.startswith("*."):
+                                    ep = ep[2:]  # Wildcard → base domain
+                                targets.append(ep)
+                        # Also check 'scope' field
+                        for s in prog.get("scope", []):
+                            ep = s.get("endpoint", "") if isinstance(s, dict) else str(s)
+                            if ep and ep.strip():
+                                ep = ep.strip()
+                                if ep.startswith("*."):
+                                    ep = ep[2:]
+                                targets.append(ep)
+                        break
+            except Exception:
+                pass
+
+    # Deduplicate
+    targets = list(dict.fromkeys(targets))
+    if targets:
+        add_bot_log("INFO", "scanner", f"Resolved '{domain}' to {len(targets)} scope domains", scan_id)
+    else:
+        add_bot_log("WARN", "scanner", f"Could not resolve '{domain}' to any scope domains", scan_id)
+    return targets
+
+
 async def _run_scan(scan_id: str, domain: str):
     scan = active_scans[scan_id]
     add_bot_log("INFO", "scanner", f"Starting scan for {domain}", scan_id)
@@ -146,12 +199,33 @@ async def _run_scan(scan_id: str, domain: str):
         })
         add_bot_log("INFO", "scanner", f"Initializing modules for {domain}", scan_id)
 
+        # Resolve program names to actual domains
+        targets = await _resolve_scan_targets(domain, scan_id)
+        if not targets:
+            scan["status"] = "error"
+            scan["error"] = f"No scannable domains found for '{domain}'"
+            scan["finished"] = datetime.now().isoformat()
+            await notify_dashboard(scan_id, {"status": "ERROR", "error": scan["error"]})
+            add_bot_log("ERROR", "scanner", scan["error"], scan_id)
+            return
+
         output_dir = str(RESULTS_DIR / f"dashboard_{scan_id}")
-        result = await run_full_scan(
-            domain,
-            output_dir=output_dir,
-            phase_callback=lambda phase_name: _on_phase(scan_id, phase_name),
-        )
+        # Run scan on each resolved target and merge results
+        all_findings = []
+        all_stats = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        for target in targets:
+            add_bot_log("INFO", "scanner", f"Scanning target: {target}", scan_id)
+            result = await run_full_scan(
+                target,
+                output_dir=output_dir,
+                phase_callback=lambda phase_name: _on_phase(scan_id, phase_name),
+            )
+            if result and isinstance(result, dict):
+                all_findings.extend(result.get("findings", []))
+                for sev in all_stats:
+                    all_stats[sev] += result.get("stats", {}).get(sev, 0)
+
+        result = {"findings": all_findings, "stats": all_stats, "duration": 0}
 
         scan["status"] = "complete"
         scan["result"] = result
@@ -202,6 +276,15 @@ async def _on_phase(scan_id: str, phase_name: str):
 @app.get("/api/scans")
 async def list_scans(token: str = Depends(check_auth_flexible)):
     return {"scans": list(active_scans.values())}
+
+@app.delete("/api/scan/{scan_id}")
+async def delete_scan(scan_id: str, token: str = Depends(check_auth_flexible)):
+    if scan_id in active_scans:
+        active_scans[scan_id]["status"] = "cancelled"
+        del active_scans[scan_id]
+        add_bot_log("INFO", "scanner", f"Scan {scan_id} deleted", scan_id)
+        return {"ok": True}
+    return JSONResponse({"error": "Scan not found"}, status_code=404)
 
 @app.get("/api/scan/{scan_id}")
 async def get_scan(scan_id: str, token: str = Depends(check_auth_flexible)):
@@ -694,6 +777,8 @@ a:hover{text-decoration:underline}
 .scan-badge.error{background:var(--red-dim);color:var(--red)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 .scan-item.running .scan-badge{animation:pulse 2s infinite}
+.scan-action{background:none;border:none;color:var(--dim);cursor:pointer;padding:4px 8px;font-size:1rem;opacity:.5;transition:opacity .15s}
+.scan-action:hover{opacity:1;color:var(--red)}
 
 /* ── Findings Table ── */
 .findings-controls{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
@@ -1071,10 +1156,16 @@ function pollScans() {
 }
 
 function scanHTML(s) {
+  var actions = '<span class="scan-badge '+esc(s.status)+'">'+esc(s.status)+'</span>';
+  actions += '<button class="scan-action" onclick="event.stopPropagation();window._deleteScan(\''+esc(s.id)+'\')" title="Delete">&#x1f5d1;</button>';
   return '<div class="scan-item '+esc(s.status)+'" onclick="window._viewScan(\''+esc(s.id)+'\')">' +
     '<div><div class="scan-domain">'+esc(s.domain)+'</div><div class="scan-time">'+formatTime(s.started)+'</div></div>' +
-    '<span class="scan-badge '+esc(s.status)+'">'+esc(s.status)+'</span></div>';
+    actions + '</div>';
 }
+window._deleteScan = function(id) {
+  if (!confirm("Delete this scan?")) return;
+  api("/api/scan/" + id, {method:"DELETE"}).then(function(){ pollScans(); });
+};
 
 window._viewScan = function(id) {
   api("/api/scan/" + id).then(function(r){
