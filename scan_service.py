@@ -29,6 +29,7 @@ from src.scanner.xss import XSSScanner
 from src.scanner.sqli import SQLiScanner
 from src.scanner.csrf import CSRFScanner
 from src.scanner.ssrf import SSRFScanner
+from src.scanner.differential import DifferentialScanner
 from src.scope.enforcer import ScopeEnforcer
 
 logging.basicConfig(level=logging.INFO)
@@ -165,7 +166,7 @@ async def start_scan(req: ScanRequest):
         "status": "running",
         "phase": "init",
         "progress": 0,
-        "modules_total": 7,
+        "modules_total": 8,
         "modules_done": 0,
         "current_module": "",
         "started_at": datetime.now().isoformat(),
@@ -802,9 +803,56 @@ async def _run_scan(req: ScanRequest, state: dict):
 
             ssrf_count = len([f for f in findings if f["module"] == "ssrf"])
             state["modules_done"] = 7
-            state["progress"] = 90
+            state["progress"] = 82
             state["findings"] = findings
             add_log("INFO", "ssrf", f"SSRF scan complete — {ssrf_count} findings", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            # ─── Module 8: Differential scanner ───
+            if state.get("status") == "cancelled":
+                return
+
+            state["current_module"] = "differential"
+            add_log("INFO", "differential", f"Starting differential scanner on {len(endpoints)} endpoints", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            diff_scanner = DifferentialScanner(http)
+
+            # Test endpoints with anonymous vs authenticated comparison
+            diff_endpoints = [ep for ep in endpoints[:20] if scope_enforcer.is_in_scope(ep.url)]
+            for ep in diff_endpoints:
+                if state.get("status") == "cancelled":
+                    break
+                try:
+                    diff_findings = await diff_scanner.scan_endpoint(
+                        ep.url,
+                        method=ep.method if hasattr(ep, "method") else "GET",
+                        anon_headers={},
+                        user_headers=scan_headers,
+                    )
+                    for f in diff_findings:
+                        entry = {
+                            "module": "differential",
+                            "severity": f.severity.upper(),
+                            "confidence": 0.7,
+                            "title": f"Differential: {f.finding_type} on {urlparse(f.url).path}",
+                            "description": f.description,
+                            "url": f.url,
+                            "evidence": f.evidence,
+                        }
+                        findings.append(entry)
+                        sev = f.severity.lower()
+                        if sev in state["stats"]:
+                            state["stats"][sev] += 1
+                        add_log("ERROR", "differential", f"FOUND: {f.finding_type} at {f.url} [{f.severity}]", req.scan_id)
+                except Exception:
+                    pass
+
+            diff_count = len([f for f in findings if f["module"] == "differential"])
+            state["modules_done"] = 8
+            state["progress"] = 90
+            state["findings"] = findings
+            add_log("INFO", "differential", f"Differential scan complete — {diff_count} findings", req.scan_id)
             await _notify_dashboard(req, state)
 
         # ═══════════════════════════════════════════
