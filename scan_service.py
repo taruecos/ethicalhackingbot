@@ -25,6 +25,10 @@ from src.recon.crawler import EndpointCrawler
 from src.scanner.idor import IDORScanner, IDORCandidate, IDORType
 from src.scanner.access_control import AccessControlScanner
 from src.scanner.info_disclosure import InfoDisclosureScanner
+from src.scanner.xss import XSSScanner
+from src.scanner.sqli import SQLiScanner
+from src.scanner.csrf import CSRFScanner
+from src.scanner.ssrf import SSRFScanner
 from src.scope.enforcer import ScopeEnforcer
 
 logging.basicConfig(level=logging.INFO)
@@ -161,7 +165,7 @@ async def start_scan(req: ScanRequest):
         "status": "running",
         "phase": "init",
         "progress": 0,
-        "modules_total": 3,
+        "modules_total": 7,
         "modules_done": 0,
         "current_module": "",
         "started_at": datetime.now().isoformat(),
@@ -385,12 +389,12 @@ async def _run_scan(req: ScanRequest, state: dict):
 
                 idor_tested += 1
                 state["endpoints_scanned"] = idor_tested
-                # Update progress: IDOR = 20% to 40%
-                state["progress"] = 20 + (idor_tested / max(len(endpoints), 1)) * 20
+                # Update progress: IDOR = 15% to 25%
+                state["progress"] = 15 + (idor_tested / max(len(endpoints), 1)) * 10
 
             idor_count = len([f for f in findings if f["module"] == "idor"])
             state["modules_done"] = 1
-            state["progress"] = 40
+            state["progress"] = 25
             state["findings"] = findings
             add_log("INFO", "idor", f"IDOR scan complete — {idor_count} findings from {idor_tested} endpoints", req.scan_id)
             await _notify_dashboard(req, state)
@@ -407,7 +411,11 @@ async def _run_scan(req: ScanRequest, state: dict):
 
             # Test admin paths
             add_log("DEBUG", "access_control", "Probing admin paths...", req.scan_id)
-            ac_findings = await ac_scanner.probe_admin_paths(target_url)
+            ac_findings = await ac_scanner.probe_admin_paths(
+                target_url,
+                unauth_headers={},          # Test unauthenticated access
+                user_headers=scan_headers,   # Test with regular user headers
+            )
             for f in ac_findings:
                 # Scope check the finding URL
                 if not scope_enforcer.is_in_scope(f.url):
@@ -471,7 +479,7 @@ async def _run_scan(req: ScanRequest, state: dict):
 
             ac_count = len([f for f in findings if f["module"] == "access_control"])
             state["modules_done"] = 2
-            state["progress"] = 60
+            state["progress"] = 35
             state["findings"] = findings
             add_log("INFO", "access_control", f"Access control scan complete — {ac_count} findings", req.scan_id)
             await _notify_dashboard(req, state)
@@ -539,9 +547,196 @@ async def _run_scan(req: ScanRequest, state: dict):
 
             id_count = len([f for f in findings if f["module"] == "info_disclosure"])
             state["modules_done"] = 3
-            state["progress"] = 85
+            state["progress"] = 45
             state["findings"] = findings
             add_log("INFO", "info_disclosure", f"Info disclosure scan complete — {id_count} findings", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            # ─── Module 4: XSS scan ───
+            if state.get("status") == "cancelled":
+                return
+
+            state["current_module"] = "xss"
+            add_log("INFO", "xss", f"Starting XSS scanner on {len(endpoints[:25])} endpoints", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            xss_scanner = XSSScanner(http)
+            for ep in endpoints[:25]:
+                if state.get("status") == "cancelled":
+                    break
+                if not scope_enforcer.is_in_scope(ep.url):
+                    continue
+                try:
+                    xss_findings = await xss_scanner.scan_endpoint(ep.url, scan_headers)
+                    for f in xss_findings:
+                        entry = {
+                            "module": "xss",
+                            "severity": f.severity.upper(),
+                            "confidence": 0.7,
+                            "title": f"XSS ({f.xss_type.value}): {f.injection_point}",
+                            "description": f.description,
+                            "url": f.url,
+                            "evidence": f.evidence,
+                        }
+                        findings.append(entry)
+                        sev = f.severity.lower()
+                        if sev in state["stats"]:
+                            state["stats"][sev] += 1
+                        add_log("ERROR", "xss", f"FOUND: {f.xss_type.value} XSS at {f.url} [{f.severity}]", req.scan_id)
+                except Exception:
+                    pass
+
+            xss_count = len([f for f in findings if f["module"] == "xss"])
+            state["modules_done"] = 4
+            state["progress"] = 55
+            state["findings"] = findings
+            add_log("INFO", "xss", f"XSS scan complete — {xss_count} findings", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            # ─── Module 5: SQL Injection scan ───
+            if state.get("status") == "cancelled":
+                return
+
+            state["current_module"] = "sqli"
+            add_log("INFO", "sqli", f"Starting SQLi scanner on {len(endpoints[:20])} endpoints", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            sqli_scanner = SQLiScanner(http)
+            for ep in endpoints[:20]:
+                if state.get("status") == "cancelled":
+                    break
+                if not scope_enforcer.is_in_scope(ep.url):
+                    continue
+                try:
+                    sqli_findings = await sqli_scanner.scan_endpoint(ep.url, scan_headers)
+                    for f in sqli_findings:
+                        entry = {
+                            "module": "sqli",
+                            "severity": f.severity.upper(),
+                            "confidence": 0.8,
+                            "title": f"SQLi ({f.sqli_type.value}): {f.injection_point}",
+                            "description": f.description,
+                            "url": f.url,
+                            "evidence": f.evidence,
+                        }
+                        findings.append(entry)
+                        sev = f.severity.lower()
+                        if sev in state["stats"]:
+                            state["stats"][sev] += 1
+                        add_log("ERROR", "sqli", f"FOUND: {f.sqli_type.value} SQLi at {f.url} [{f.severity}]", req.scan_id)
+                except Exception:
+                    pass
+
+            sqli_count = len([f for f in findings if f["module"] == "sqli"])
+            state["modules_done"] = 5
+            state["progress"] = 65
+            state["findings"] = findings
+            add_log("INFO", "sqli", f"SQLi scan complete — {sqli_count} findings", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            # ─── Module 6: CSRF scan ───
+            if state.get("status") == "cancelled":
+                return
+
+            state["current_module"] = "csrf"
+            add_log("INFO", "csrf", f"Starting CSRF scanner on state-changing endpoints", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            csrf_scanner = CSRFScanner(http)
+            for ep in endpoints[:20]:
+                if state.get("status") == "cancelled":
+                    break
+                if not scope_enforcer.is_in_scope(ep.url):
+                    continue
+                if ep.method.upper() in ("POST", "PUT", "DELETE", "PATCH"):
+                    try:
+                        csrf_findings = await csrf_scanner.scan_endpoint(ep.url, ep.method, scan_headers)
+                        for f in csrf_findings:
+                            entry = {
+                                "module": "csrf",
+                                "severity": f.severity.upper(),
+                                "confidence": 0.6,
+                                "title": f"CSRF: {f.missing_protection} at {f.url}",
+                                "description": f.description,
+                                "url": f.url,
+                                "evidence": f.evidence,
+                            }
+                            findings.append(entry)
+                            sev = f.severity.lower()
+                            if sev in state["stats"]:
+                                state["stats"][sev] += 1
+                            add_log("ERROR", "csrf", f"FOUND: Missing {f.missing_protection} at {f.url} [{f.severity}]", req.scan_id)
+                    except Exception:
+                        pass
+
+            csrf_count = len([f for f in findings if f["module"] == "csrf"])
+            state["modules_done"] = 6
+            state["progress"] = 75
+            state["findings"] = findings
+            add_log("INFO", "csrf", f"CSRF scan complete — {csrf_count} findings", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            # ─── Module 7: SSRF scan ───
+            if state.get("status") == "cancelled":
+                return
+
+            state["current_module"] = "ssrf"
+            add_log("INFO", "ssrf", f"Starting SSRF scanner on {target_url}", req.scan_id)
+            await _notify_dashboard(req, state)
+
+            ssrf_scanner = SSRFScanner(http)
+
+            # Probe common SSRF-prone paths
+            ssrf_findings = await ssrf_scanner.probe_common_ssrf_endpoints(target_url, scan_headers)
+            for f in ssrf_findings:
+                if not scope_enforcer.is_in_scope(f.url):
+                    continue
+                entry = {
+                    "module": "ssrf",
+                    "severity": f.severity.upper(),
+                    "confidence": 0.7,
+                    "title": f"SSRF: {f.injection_point}",
+                    "description": f.description,
+                    "url": f.url,
+                    "evidence": f.evidence,
+                }
+                findings.append(entry)
+                sev = f.severity.lower()
+                if sev in state["stats"]:
+                    state["stats"][sev] += 1
+                add_log("ERROR", "ssrf", f"FOUND: SSRF at {f.url} [{f.severity}]", req.scan_id)
+
+            # Also test discovered endpoints with URL-like params
+            for ep in endpoints[:15]:
+                if state.get("status") == "cancelled":
+                    break
+                if not scope_enforcer.is_in_scope(ep.url):
+                    continue
+                try:
+                    ep_ssrf_findings = await ssrf_scanner.scan_endpoint(ep.url, scan_headers)
+                    for f in ep_ssrf_findings:
+                        entry = {
+                            "module": "ssrf",
+                            "severity": f.severity.upper(),
+                            "confidence": 0.7,
+                            "title": f"SSRF: {f.injection_point}",
+                            "description": f.description,
+                            "url": f.url,
+                            "evidence": f.evidence,
+                        }
+                        findings.append(entry)
+                        sev = f.severity.lower()
+                        if sev in state["stats"]:
+                            state["stats"][sev] += 1
+                        add_log("ERROR", "ssrf", f"FOUND: SSRF via param at {f.url} [{f.severity}]", req.scan_id)
+                except Exception:
+                    pass
+
+            ssrf_count = len([f for f in findings if f["module"] == "ssrf"])
+            state["modules_done"] = 7
+            state["progress"] = 90
+            state["findings"] = findings
+            add_log("INFO", "ssrf", f"SSRF scan complete — {ssrf_count} findings", req.scan_id)
             await _notify_dashboard(req, state)
 
         # ═══════════════════════════════════════════
