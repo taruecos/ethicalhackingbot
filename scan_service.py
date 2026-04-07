@@ -290,27 +290,30 @@ async def _run_scan(req: ScanRequest, state: dict):
     state["scope_entries"] = scope_entries
     add_log("INFO", "compliance", f"Scope enforcer active — {len(scope_entries)} entries: {', '.join(scope_entries)}", req.scan_id)
 
+    # ═══════════════════════════════════════════
+    # Safe Harbour Gate — HARD BLOCK
+    # ═══════════════════════════════════════════
+    if not req.rules_of_engagement or not req.rules_of_engagement.safeHarbour:
+        add_log("CRITICAL", "compliance", "BLOCKED: No safe harbour protection — scan aborted. Cannot proceed without legal safe harbour.", req.scan_id)
+        state["status"] = "blocked"
+        state["phase"] = "compliance"
+        state["error"] = "No safe harbour protection. Scan blocked for legal safety."
+        await _notify_dashboard(req, state, "error")
+        return
+
+    add_log("INFO", "compliance", "Safe harbour policy confirmed by program", req.scan_id)
+
     # Build headers from rules of engagement
     scan_headers: dict[str, str] = {}
-    if req.rules_of_engagement:
-        roe = req.rules_of_engagement
-        if roe.userAgent:
-            scan_headers["User-Agent"] = roe.userAgent
-            add_log("INFO", "compliance", f"Custom User-Agent: {roe.userAgent}", req.scan_id)
-        if roe.requestHeader:
-            if ":" in roe.requestHeader:
-                key, val = roe.requestHeader.split(":", 1)
-                scan_headers[key.strip()] = val.strip()
-                add_log("INFO", "compliance", f"Custom header: {key.strip()}", req.scan_id)
-        if roe.safeHarbour:
-            add_log("INFO", "compliance", "Safe harbour policy confirmed by program", req.scan_id)
-        else:
-            add_log("CRITICAL", "compliance", "BLOCKED: No safe harbour protection — scan aborted. Cannot proceed without legal safe harbour.", req.scan_id)
-            state["status"] = "blocked"
-            state["phase"] = "compliance"
-            state["error"] = "No safe harbour protection. Scan blocked for legal safety."
-            await _notify_dashboard(req, state, "error")
-            return
+    roe = req.rules_of_engagement
+    if roe.userAgent:
+        scan_headers["User-Agent"] = roe.userAgent
+        add_log("INFO", "compliance", f"Custom User-Agent: {roe.userAgent}", req.scan_id)
+    if roe.requestHeader:
+        if ":" in roe.requestHeader:
+            key, val = roe.requestHeader.split(":", 1)
+            scan_headers[key.strip()] = val.strip()
+            add_log("INFO", "compliance", f"Custom header: {key.strip()}", req.scan_id)
 
     request_delay = max(60.0 / req.rate_limit, 1.0)
     add_log("INFO", "compliance", f"Rate limit: {req.rate_limit} req/min (delay: {request_delay:.1f}s)", req.scan_id)
@@ -364,7 +367,7 @@ async def _run_scan(req: ScanRequest, state: dict):
         # Phase 1: Reconnaissance (or Resume)
         # ═══════════════════════════════════════════
         resume_module = 0
-        if req.resume and req.resume.endpoints:
+        if req.resume and req.resume.endpoints and len(req.resume.endpoints) > 0:
             # Resume mode — skip crawl, use saved endpoints
             add_log("INFO", "resume", f"Resuming scan — {len(req.resume.endpoints)} saved endpoints, last module: {req.resume.last_module} ({req.resume.last_module_name})", req.scan_id)
             resume_module = req.resume.last_module
@@ -378,6 +381,10 @@ async def _run_scan(req: ScanRequest, state: dict):
             state["progress"] = 15
             state["modules_done"] = resume_module
             await _notify_dashboard(req, state)
+        elif req.resume and (not req.resume.endpoints or len(req.resume.endpoints) == 0):
+            # Resume requested but no saved endpoints — fall back to fresh crawl
+            add_log("WARN", "resume", "Resume requested but 0 saved endpoints — falling back to fresh crawl", req.scan_id)
+            req.resume = None  # Reset so crawl logic runs normally
         else:
             # Normal crawl
             state["phase"] = "recon"
@@ -970,12 +977,26 @@ async def _run_scan(req: ScanRequest, state: dict):
         add_log("INFO", "report", f"Generating scan report — {len(findings)} total findings", req.scan_id)
         await _notify_dashboard(req, state)
 
-        # Build summary
+        # Generate structured report using reporter module
+        from src.reporter import generate_scan_report
+        from src.reporter.generator import render_markdown
+
+        scan_duration = int(time.time() - state["start_time"])
+        structured_report = generate_scan_report(
+            scan_id=req.scan_id,
+            target=target_url,
+            findings=findings,
+            duration=scan_duration,
+            modules=MODULE_NAMES,
+            scope=scope_entries,
+        )
+
+        # Build summary log
         summary_lines = [
             f"Target: {target_url}",
             f"Endpoints discovered: {state['endpoints_total']}",
             f"Out-of-scope blocked: {state['blocked_count']}",
-            f"Duration: {int(time.time() - state['start_time'])}s",
+            f"Duration: {scan_duration}s",
             f"Findings: {len(findings)} total",
         ]
         for sev in ["critical", "high", "medium", "low", "info"]:
@@ -985,24 +1006,17 @@ async def _run_scan(req: ScanRequest, state: dict):
 
         add_log("INFO", "report", " | ".join(summary_lines), req.scan_id)
 
-        # Save report to disk
+        # Save reports to disk (JSON + Markdown)
         reports_dir = Path("./reports")
         reports_dir.mkdir(exist_ok=True)
-        report = {
-            "domain": req.domain,
-            "target_url": target_url,
-            "scan_date": datetime.now().isoformat(),
-            "scope": scope_entries,
-            "endpoints_discovered": state["endpoints_total"],
-            "endpoints_blocked": state["blocked_count"],
-            "findings": findings,
-            "stats": state["stats"],
-            "total_findings": len(findings),
-            "duration": int(time.time() - state["start_time"]),
-        }
+
         report_path = reports_dir / f"{req.domain.replace('.', '_')}_{req.scan_id[:8]}.json"
-        report_path.write_text(json.dumps(report, indent=2, default=str))
-        add_log("INFO", "report", f"Report saved: {report_path}", req.scan_id)
+        report_path.write_text(json.dumps(structured_report, indent=2, default=str))
+        add_log("INFO", "report", f"JSON report saved: {report_path}", req.scan_id)
+
+        md_path = reports_dir / f"{req.domain.replace('.', '_')}_{req.scan_id[:8]}.md"
+        md_path.write_text(render_markdown(structured_report))
+        add_log("INFO", "report", f"Markdown report saved: {md_path}", req.scan_id)
 
         state["progress"] = 100
         state["status"] = "complete"

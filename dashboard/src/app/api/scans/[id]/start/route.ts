@@ -82,6 +82,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       );
     }
 
+    // HARD BLOCK: refuse to start without safe harbour protection
+    const safeHarbour = compliance?.safeHarbour ?? configRoe?.safeHarbour ?? false;
+    if (!safeHarbour) {
+      return NextResponse.json(
+        { error: "BLOCKED — no safe harbour protection. Cannot proceed without legal safe harbour." },
+        { status: 403 }
+      );
+    }
+
     const roe = compliance
       ? {
           userAgent: compliance.userAgent || null,

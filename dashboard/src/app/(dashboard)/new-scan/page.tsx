@@ -26,6 +26,7 @@ export default function NewScanPage() {
   });
   const [userAgent, setUserAgent] = useState("");
   const [customHeader, setCustomHeader] = useState("");
+  const [safeHarbour, setSafeHarbour] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   function addScopeEntry() {
@@ -72,6 +73,11 @@ export default function NewScanPage() {
       return;
     }
 
+    if (!safeHarbour) {
+      setError("You must confirm Safe Harbour protection before scanning");
+      return;
+    }
+
     setSubmitting(true);
 
     try {
@@ -87,7 +93,7 @@ export default function NewScanPage() {
           rulesOfEngagement: {
             userAgent: userAgent.trim() || null,
             requestHeader: customHeader.trim() || null,
-            safeHarbour: true,
+            safeHarbour,
           },
           programId: undefined,
         }),
@@ -279,6 +285,28 @@ export default function NewScanPage() {
               className="w-full px-3 py-2 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-sm focus:border-[var(--accent)] focus:outline-none"
             />
           </div>
+        </div>
+
+        {/* Safe Harbour Confirmation */}
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Shield className="w-4 h-4 text-[var(--accent)]" />
+            <h2 className="text-xs font-bold uppercase tracking-wider text-[var(--dim)]">Legal Protection</h2>
+          </div>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={safeHarbour}
+              onChange={(e) => setSafeHarbour(e.target.checked)}
+              className="accent-[var(--accent)] mt-0.5"
+            />
+            <div>
+              <span className="text-sm font-medium">I confirm Safe Harbour protection</span>
+              <p className="text-[10px] text-[var(--dim)] mt-1">
+                I have written authorization to scan this target, and the target has a Safe Harbour policy or I am operating under a bug bounty program that provides legal protection.
+              </p>
+            </div>
+          </label>
         </div>
 
         {/* Error */}

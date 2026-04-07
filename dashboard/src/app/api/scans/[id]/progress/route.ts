@@ -77,7 +77,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       };
     });
 
-    await prisma.finding.createMany({ data: findingData });
+    // Deduplicate findings by (module, title, url) before inserting
+    const seen = new Set<string>();
+    const uniqueFindings = findingData.filter((f) => {
+      const key = `${f.module}::${f.title}::${f.url || ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // Delete existing findings for this scan to prevent duplicates on resume
+    await prisma.finding.deleteMany({ where: { scanId: id } });
+    await prisma.finding.createMany({ data: uniqueFindings });
     await prisma.scan.update({
       where: { id },
       data: { stats },

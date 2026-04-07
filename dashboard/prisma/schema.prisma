@@ -99,6 +99,7 @@ model Finding {
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 
+  @@unique([scanId, module, title, url])
   @@index([scanId])
   @@index([severity])
   @@index([status])

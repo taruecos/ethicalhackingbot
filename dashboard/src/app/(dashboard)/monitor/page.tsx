@@ -157,6 +157,7 @@ export default function LiveMonitorPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [botOnline, setBotOnline] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [relaunchErrors, setRelaunchErrors] = useState<Record<string, string>>({});
   const [paused, setPaused] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [logFilter, setLogFilter] = useState<string>("");
@@ -246,6 +247,7 @@ export default function LiveMonitorPage() {
 
   async function relaunchScan(scanId: string, resume: boolean) {
     setRelaunchingId(scanId);
+    setRelaunchErrors((prev) => { const next = { ...prev }; delete next[scanId]; return next; });
     try {
       // Step 1: relaunch (sets status to QUEUED, preserves checkpoint if resume)
       const relaunchRes = await fetch(`/api/scans/${scanId}/relaunch`, {
@@ -253,7 +255,11 @@ export default function LiveMonitorPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resume }),
       });
-      if (!relaunchRes.ok) return;
+      if (!relaunchRes.ok) {
+        const errData = await relaunchRes.json().catch(() => ({ error: "Relaunch failed" }));
+        setRelaunchErrors((prev) => ({ ...prev, [scanId]: errData.error || `Relaunch failed (${relaunchRes.status})` }));
+        return;
+      }
       const relaunchData = await relaunchRes.json();
       const targetId = relaunchData.id || scanId;
 
@@ -262,9 +268,12 @@ export default function LiveMonitorPage() {
       if (startRes.ok) {
         setRelaunchableScans((prev) => prev.filter((s) => s.id !== scanId));
         fetchStatus();
+      } else {
+        const errData = await startRes.json().catch(() => ({ error: "Failed to start scan" }));
+        setRelaunchErrors((prev) => ({ ...prev, [scanId]: errData.error || `Start failed (${startRes.status})` }));
       }
     } catch {
-      // silent
+      setRelaunchErrors((prev) => ({ ...prev, [scanId]: "Network error — scanner might be offline" }));
     } finally {
       setRelaunchingId(null);
     }
@@ -545,6 +554,8 @@ export default function LiveMonitorPage() {
         </div>
       )}
 
+      {/* Relaunch errors are now shown inline per scan below */}
+
       {/* Relaunchable Scans (completed/errored/cancelled) */}
       {relaunchableScans.length > 0 && (
         <div className="space-y-3">
@@ -626,6 +637,17 @@ export default function LiveMonitorPage() {
                   Fresh Scan
                 </button>
               </div>
+              {relaunchErrors[scan.id] && (
+                <div className="w-full mt-2 bg-[var(--red)]/10 border border-[var(--red)]/30 rounded-lg px-3 py-2 flex items-center justify-between">
+                  <p className="text-[10px] text-[var(--red)]">{relaunchErrors[scan.id]}</p>
+                  <button
+                    onClick={() => setRelaunchErrors((prev) => { const next = { ...prev }; delete next[scan.id]; return next; })}
+                    className="text-[var(--red)] text-[10px] font-bold hover:underline ml-3 shrink-0"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

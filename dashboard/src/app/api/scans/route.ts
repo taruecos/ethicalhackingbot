@@ -25,6 +25,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Domain required" }, { status: 400 });
   }
 
+  // HARD BLOCK: refuse to create scan without safe harbour protection
+  if (!rulesOfEngagement || !rulesOfEngagement.safeHarbour) {
+    return NextResponse.json(
+      { error: "BLOCKED — no safe harbour protection. Cannot create scan without legal safe harbour." },
+      { status: 403 }
+    );
+  }
+
   const target = domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
 
   // Create scan in DB — scope and ROE stored in config for the scanner
