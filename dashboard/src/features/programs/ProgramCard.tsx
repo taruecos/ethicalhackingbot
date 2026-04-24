@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { ScanLine, Info, CheckCircle2, XCircle, Download } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
-import type { Program, ComplianceStatus } from "./mockData";
+import type { Program, ComplianceStatus } from "./types";
 
 export const COMPLIANCE_CFG: Record<ComplianceStatus, { label: string; color: string; bg: string; border: string }> = {
   allowed: { label: "Automated OK", color: ds.accent.default, bg: ds.accent.bg15, border: ds.border.accent20 },

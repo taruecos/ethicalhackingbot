@@ -19,6 +19,20 @@ const TABS: Array<{ id: Tab; label: string; badge?: string }> = [
   { id: "payouts", label: "Payouts" },
 ];
 
+function timeAgo(date: Date | null): string {
+  if (!date) return "never";
+  const ms = Date.now() - date.getTime();
+  const sec = Math.floor(ms / 1000);
+  if (sec < 5) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  return `${days}d ago`;
+}
+
 export function ProgramsPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -27,49 +41,49 @@ export function ProgramsPage() {
   const setTab = (t: Tab) => router.replace(`${pathname}?tab=${t}`, { scroll: false });
 
   const [syncing, setSyncing] = useState(false);
-  const [syncProgress, setSyncProgress] = useState(0);
-  const [lastSync, setLastSync] = useState("12 min ago");
-  const [apiErrorBanner, setApiErrorBanner] = useState(false);
+  const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
   const [syncDone, setSyncDone] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncResult, setSyncResult] = useState<{ total: number; synced: number; compliant: number } | null>(null);
 
-  const startSync = () => {
+  const startSync = async () => {
     if (syncing) return;
     setSyncing(true);
-    setSyncProgress(0);
+    setSyncError(null);
     setSyncDone(false);
-
-    let pct = 0;
-    const iv = setInterval(() => {
-      pct += Math.random() * 6 + 2;
-      if (pct >= 100) {
-        pct = 100;
-        clearInterval(iv);
-        setSyncing(false);
-        setSyncProgress(100);
-        setSyncDone(true);
-        setLastSync("just now");
-        setTimeout(() => setSyncDone(false), 3000);
-      }
-      setSyncProgress(pct);
-    }, 100);
+    try {
+      const res = await fetch("/api/programs/sync", { method: "POST" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+      setSyncResult({
+        total: Number(json.total ?? 0),
+        synced: Number(json.synced ?? 0),
+        compliant: Number(json.compliant ?? 0),
+      });
+      setLastSyncAt(new Date());
+      setSyncDone(true);
+      setTimeout(() => setSyncDone(false), 4000);
+    } catch (e) {
+      setSyncError(e instanceof Error ? e.message : "Sync failed");
+    } finally {
+      setSyncing(false);
+    }
   };
-
-  const syncCount = Math.round(syncProgress * 1.2);
 
   return (
     <div>
-      {apiErrorBanner && (
+      {syncError && (
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 20, padding: "12px 16px", backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40`, borderRadius: ds.radius.lg }}>
           <AlertCircle size={15} style={{ color: ds.severity.critical, flexShrink: 0, marginTop: 1 }} />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.severity.critical, marginBottom: 3 }}>Intigriti sync failed</div>
-            <div style={{ fontSize: ds.size.xs, color: ds.text.muted }}>Could not reach api.intigriti.com. Check your API token in Settings or try again.</div>
+            <div style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{syncError}</div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
             <DSButton variant="secondary" size="sm" icon={<RefreshCw size={11} />} onClick={startSync}>
               Retry
             </DSButton>
-            <button onClick={() => setApiErrorBanner(false)} style={{ background: "none", border: "none", cursor: "pointer", color: ds.text.muted, padding: 2 }}>
+            <button onClick={() => setSyncError(null)} style={{ background: "none", border: "none", cursor: "pointer", color: ds.text.muted, padding: 2 }}>
               <X size={13} />
             </button>
           </div>
@@ -79,11 +93,15 @@ export function ProgramsPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
         <h1 style={{ margin: 0, fontSize: ds.size["3xl"], fontWeight: ds.weight.bold, color: ds.text.primary, lineHeight: 1.2 }}>Programs</h1>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{syncDone ? <span style={{ color: ds.accent.default }}>✓ Synced just now</span> : `Last sync: ${lastSync}`}</span>
-
-          <button onClick={() => setApiErrorBanner(!apiErrorBanner)} style={{ height: 28, padding: "0 10px", borderRadius: ds.radius.md, cursor: "pointer", border: `1px solid ${ds.border.default}`, backgroundColor: "transparent", color: ds.text.muted, fontSize: ds.size.xs, fontFamily: "Inter, sans-serif" }}>
-            {apiErrorBanner ? "Hide error" : "Simulate error"}
-          </button>
+          <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>
+            {syncDone ? (
+              <span style={{ color: ds.accent.default }}>
+                ✓ Synced {syncResult ? `${syncResult.synced}/${syncResult.total}` : ""}
+              </span>
+            ) : (
+              `Last sync: ${timeAgo(lastSyncAt)}`
+            )}
+          </span>
 
           <DSButton variant="primary" size="md" icon={syncing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} onClick={startSync}>
             {syncing ? "Syncing…" : "Sync Intigriti"}
@@ -92,17 +110,10 @@ export function ProgramsPage() {
       </div>
 
       {syncing && (
-        <div style={{ marginBottom: 16, padding: "12px 16px", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Loader2 size={12} className="animate-spin" style={{ color: ds.accent.default }} />
-              <span style={{ fontSize: ds.size.sm, color: ds.text.primary }}>Syncing programs with Intigriti…</span>
-            </div>
-            <span style={{ fontSize: ds.size.xs, color: ds.accent.default, fontWeight: ds.weight.semibold, fontVariantNumeric: "tabular-nums" }}>{Math.min(syncCount, 120)} / 120</span>
-          </div>
-          <div style={{ height: 4, backgroundColor: ds.bg.base, borderRadius: 2, overflow: "hidden" }}>
-            <div style={{ width: `${syncProgress}%`, height: "100%", backgroundColor: ds.accent.default, borderRadius: 2, transition: "width 0.12s linear" }} />
-          </div>
+        <div style={{ marginBottom: 16, padding: "12px 16px", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, display: "flex", alignItems: "center", gap: 8 }}>
+          <Loader2 size={12} className="animate-spin" style={{ color: ds.accent.default }} />
+          <span style={{ fontSize: ds.size.sm, color: ds.text.primary }}>Syncing programs with Intigriti…</span>
+          <span style={{ fontSize: ds.size.xs, color: ds.text.muted, marginLeft: "auto" }}>This can take a minute</span>
         </div>
       )}
 

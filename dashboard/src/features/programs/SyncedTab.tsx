@@ -1,13 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { SlidersHorizontal, X, ChevronDown, ChevronUp, RotateCcw, Database, Loader2, Search } from "lucide-react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { SlidersHorizontal, X, ChevronDown, ChevronUp, RotateCcw, Database, Loader2, Search, WifiOff } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
 import { ProgramCard } from "./ProgramCard";
 import { ProgramDrawer } from "./ProgramDrawer";
-import { SYNCED_PROGRAMS, ALL_INDUSTRIES } from "./mockData";
-import type { Program, ComplianceStatus } from "./mockData";
+import type { Program, ComplianceStatus, ScopeEntry } from "./types";
 
 const DEFAULT_FILTERS = {
   search: "",
@@ -20,9 +19,74 @@ const DEFAULT_FILTERS = {
 };
 
 type Filters = typeof DEFAULT_FILTERS;
-type DemoState = "default" | "loading" | "syncing" | "empty_db";
 
-function IndustryDropdown({ selected, onChange }: { selected: Set<string>; onChange: (s: Set<string>) => void }) {
+interface ApiProgram {
+  id: string;
+  platform: string;
+  name: string;
+  slug: string;
+  url: string;
+  intigritiId: string | null;
+  scope: unknown;
+  compliance: Record<string, unknown> | null;
+  maxBounty: number | null;
+  minBounty: number | null;
+  currency: string;
+  industry: string | null;
+  confidentiality: string | null;
+  active: boolean;
+  syncedAt: string;
+}
+
+function dbToProgram(p: ApiProgram): Program {
+  const compliance = (p.compliance ?? {}) as Record<string, unknown>;
+  const toolingStatus = compliance.automatedToolingStatus as string | undefined;
+  let complianceStatus: ComplianceStatus = "conditional";
+  if (toolingStatus === "allowed") complianceStatus = "allowed";
+  else if (toolingStatus === "not_allowed") complianceStatus = "not_allowed";
+  else if (toolingStatus === "conditional") complianceStatus = "conditional";
+
+  const scopeArr: ScopeEntry[] = [];
+  if (Array.isArray(p.scope)) {
+    for (const e of p.scope) {
+      const entry = e as Record<string, unknown>;
+      const tier = (entry.tier as string) || "";
+      const isOut = /out/i.test(tier);
+      scopeArr.push({
+        tier: isOut ? "out_scope" : "in_scope",
+        endpoint: (entry.endpoint as string) ?? "",
+        type: ((entry.type as string) === "ip" ? "ip" : (entry.type as string) === "wildcard" ? "wildcard" : "url") as ScopeEntry["type"],
+        description: (entry.description as string) ?? "",
+      });
+    }
+  }
+
+  const requestHeader = compliance.requestHeader as string | null | undefined;
+  const description = (compliance.description as string) ?? "";
+
+  return {
+    id: p.id,
+    intigritiId: p.intigritiId,
+    name: p.name,
+    companyName: p.name,
+    complianceStatus,
+    bountyType: p.maxBounty && p.maxBounty > 0 ? "bounty" : "responsible_disclosure",
+    bountyMin: p.minBounty,
+    bountyMax: p.maxBounty,
+    currency: p.currency || "EUR",
+    industry: p.industry || "Other",
+    confidentiality: p.confidentiality === "Public" ? "public" : "application_only",
+    safeHarbour: Boolean(compliance.safeHarbour),
+    lastSynced: p.syncedAt ? new Date(p.syncedAt).toISOString().slice(0, 16).replace("T", " ") : "—",
+    synced: true,
+    scope: scopeArr,
+    userAgent: (compliance.userAgent as string) || "EHBScanner/1.0",
+    reqHeaders: requestHeader ? [requestHeader] : [],
+    rulesOfEngagement: description || "",
+  };
+}
+
+function IndustryDropdown({ selected, onChange, industries }: { selected: Set<string>; onChange: (s: Set<string>) => void; industries: string[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -48,8 +112,9 @@ function IndustryDropdown({ selected, onChange }: { selected: Set<string>; onCha
         {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
       </button>
       {open && (
-        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 60, backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.md, marginTop: 4, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
-          {ALL_INDUSTRIES.map((ind) => (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 60, backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.md, marginTop: 4, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,0.5)", maxHeight: 240, overflowY: "auto" }}>
+          {industries.length === 0 && <div style={{ padding: "8px 10px", fontSize: ds.size.xs, color: ds.text.muted }}>No industries</div>}
+          {industries.map((ind) => (
             <div
               key={ind}
               onClick={() => toggle(ind)}
@@ -100,7 +165,7 @@ function FilterGroup({ label, children, noBorder }: { label: string; children: R
   );
 }
 
-function FilterSidebar({ filters, onChange, onReset }: { filters: Filters; onChange: (f: Partial<Filters>) => void; onReset: () => void }) {
+function FilterSidebar({ filters, onChange, onReset, industries }: { filters: Filters; onChange: (f: Partial<Filters>) => void; onReset: () => void; industries: string[] }) {
   const toggleCompliance = (val: ComplianceStatus) => {
     const next = new Set(filters.compliance);
     if (next.has(val)) {
@@ -153,7 +218,7 @@ function FilterSidebar({ filters, onChange, onReset }: { filters: Filters; onCha
       </FilterGroup>
 
       <FilterGroup label="Industry">
-        <IndustryDropdown selected={filters.industries} onChange={(s) => onChange({ industries: s })} />
+        <IndustryDropdown selected={filters.industries} onChange={(s) => onChange({ industries: s })} industries={industries} />
       </FilterGroup>
 
       <FilterGroup label="Confidentiality">
@@ -219,25 +284,41 @@ export function SyncedTab({ syncingExternal }: { syncingExternal?: boolean }) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [filters, setFilters] = useState<Filters>({ ...DEFAULT_FILTERS, compliance: new Set(DEFAULT_FILTERS.compliance) });
   const [selectedProgram, setSelectedProgram] = useState<Program | null>(null);
-  const [demoState, setDemoState] = useState<DemoState>("default");
-  const [syncPct, setSyncPct] = useState(0);
+  const [programs, setPrograms] = useState<Program[]>([]);
+  const [industries, setIndustries] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/programs?limit=500", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const list = (json.programs ?? []) as ApiProgram[];
+      setPrograms(list.map(dbToProgram));
+      setIndustries((json.industries ?? []) as string[]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (syncingExternal) {
-      setDemoState("syncing");
-      let pct = 0;
-      const iv = setInterval(() => {
-        pct = Math.min(100, pct + Math.random() * 8 + 2);
-        setSyncPct(pct);
-        if (pct >= 100) clearInterval(iv);
-      }, 120);
-    }
-  }, [syncingExternal]);
+    load();
+  }, [load]);
+
+  // Reload when external sync completes
+  useEffect(() => {
+    if (syncingExternal === false) load();
+  }, [syncingExternal, load]);
 
   const updateFilter = (partial: Partial<Filters>) => setFilters((prev) => ({ ...prev, ...partial }));
   const resetFilters = () => setFilters({ ...DEFAULT_FILTERS, compliance: new Set(DEFAULT_FILTERS.compliance) });
 
-  const applyFilters = (programs: Program[]) => {
+  const filtered = useMemo(() => {
     let result = programs.filter((p) => {
       if (!filters.compliance.has(p.complianceStatus)) return false;
       if (filters.safeHarbour === "yes" && !p.safeHarbour) return false;
@@ -248,50 +329,26 @@ export function SyncedTab({ syncingExternal }: { syncingExternal?: boolean }) {
       if (filters.search && !p.name.toLowerCase().includes(filters.search.toLowerCase())) return false;
       return true;
     });
-    if (filters.sortBy === "highest_bounty") result = result.sort((a, b) => (b.bountyMax ?? 0) - (a.bountyMax ?? 0));
-    else if (filters.sortBy === "name_az") result = result.sort((a, b) => a.name.localeCompare(b.name));
+    if (filters.sortBy === "highest_bounty") result = [...result].sort((a, b) => (b.bountyMax ?? 0) - (a.bountyMax ?? 0));
+    else if (filters.sortBy === "name_az") result = [...result].sort((a, b) => a.name.localeCompare(b.name));
     return result;
-  };
+  }, [programs, filters]);
 
-  const filtered = applyFilters(SYNCED_PROGRAMS);
   const isFiltered = filters.search !== "" || filters.industries.size > 0 || filters.safeHarbour !== "all" || filters.bountyType !== "all" || filters.confidentiality !== "all" || filters.compliance.size < 3;
-
   const activeFilterCount = [filters.search ? 1 : 0, filters.industries.size > 0 ? 1 : 0, filters.safeHarbour !== "all" ? 1 : 0, filters.bountyType !== "all" ? 1 : 0, filters.confidentiality !== "all" ? 1 : 0, filters.compliance.size < 3 ? 1 : 0].reduce((a, b) => a + b, 0);
-
-  const showLoading = demoState === "loading";
-  const showSyncing = demoState === "syncing";
-  const showEmptyDB = demoState === "empty_db";
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, padding: "7px 12px", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, flexWrap: "wrap" }}>
-        <span style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.semibold, textTransform: "uppercase", letterSpacing: "0.06em" }}>State</span>
-        {(["default", "loading", "syncing", "empty_db"] as DemoState[]).map((s) => (
-          <button
-            key={s}
-            onClick={() => {
-              setDemoState(s);
-              if (s === "syncing") setSyncPct(38);
-            }}
-            style={{ height: 24, padding: "0 10px", borderRadius: ds.radius.md, cursor: "pointer", border: `1px solid ${demoState === s ? ds.accent.default : ds.border.default}`, backgroundColor: demoState === s ? ds.accent.bg15 : "transparent", color: demoState === s ? ds.accent.default : ds.text.secondary, fontSize: ds.size.xs, fontFamily: "Inter, sans-serif", transition: "all 0.1s ease" }}
-          >
-            {s}
-          </button>
-        ))}
-      </div>
-
-      {showSyncing && (
-        <div style={{ marginBottom: 16, padding: "12px 16px", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Loader2 size={13} className="animate-spin" style={{ color: ds.accent.default }} />
-              <span style={{ fontSize: ds.size.sm, color: ds.text.primary }}>Syncing programs with Intigriti…</span>
+      {error && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderRadius: ds.radius.lg, backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40`, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <WifiOff size={16} style={{ color: ds.severity.critical, flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.severity.critical }}>Unable to load programs</div>
+              <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>{error}</div>
             </div>
-            <span style={{ fontSize: ds.size.xs, color: ds.accent.default, fontVariantNumeric: "tabular-nums", fontWeight: ds.weight.semibold }}>{Math.round(syncPct * 1.2)}/120</span>
           </div>
-          <div style={{ height: 4, backgroundColor: ds.bg.base, borderRadius: 2, overflow: "hidden" }}>
-            <div style={{ width: `${syncPct}%`, height: "100%", backgroundColor: ds.accent.default, borderRadius: 2, transition: "width 0.15s ease" }} />
-          </div>
+          <DSButton variant="danger" size="sm" icon={<RotateCcw size={12} />} onClick={load}>Retry</DSButton>
         </div>
       )}
 
@@ -309,7 +366,7 @@ export function SyncedTab({ syncingExternal }: { syncingExternal?: boolean }) {
                 <X size={13} />
               </button>
             </div>
-            <FilterSidebar filters={filters} onChange={updateFilter} onReset={resetFilters} />
+            <FilterSidebar filters={filters} onChange={updateFilter} onReset={resetFilters} industries={industries} />
           </aside>
         )}
 
@@ -322,29 +379,29 @@ export function SyncedTab({ syncingExternal }: { syncingExternal?: boolean }) {
               </button>
             )}
             <span style={{ fontSize: ds.size.xs, color: ds.text.muted, marginLeft: "auto" }}>
-              {!showLoading && !showEmptyDB && (
+              {!loading && (
                 <>
                   {filtered.length} program{filtered.length !== 1 ? "s" : ""}
                 </>
               )}
             </span>
-            {isFiltered && !showLoading && (
+            {isFiltered && !loading && (
               <button onClick={resetFilters} style={{ display: "flex", alignItems: "center", gap: 4, height: 26, padding: "0 10px", borderRadius: ds.radius.md, border: `1px solid ${ds.border.default}`, backgroundColor: "transparent", color: ds.text.muted, fontSize: ds.size.xs, cursor: "pointer", fontFamily: "Inter, sans-serif" }}>
                 <RotateCcw size={10} /> Clear filters
               </button>
             )}
           </div>
 
-          {showLoading ? (
+          {loading && programs.length === 0 ? (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
               {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
             </div>
-          ) : showEmptyDB ? (
+          ) : !loading && programs.length === 0 ? (
             <EmptyState icon={<Database size={40} style={{ color: ds.text.muted }} />} title="No programs synced yet" subtitle='Click "Sync Intigriti" in the header to import your program list from the platform.' />
           ) : filtered.length === 0 ? (
             <EmptyState icon={<SlidersHorizontal size={36} style={{ color: ds.text.muted }} />} title="No programs match your filters" subtitle="Try adjusting the filter criteria or reset to see all programs." cta="Reset filters" onCta={resetFilters} />
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16, opacity: loading ? 0.6 : 1 }}>
               {filtered.map((p) => (
                 <ProgramCard key={p.id} program={p} onDetails={setSelectedProgram} onScan={() => {}} />
               ))}
@@ -354,6 +411,8 @@ export function SyncedTab({ syncingExternal }: { syncingExternal?: boolean }) {
       </div>
 
       <ProgramDrawer program={selectedProgram} onClose={() => setSelectedProgram(null)} onScan={() => setSelectedProgram(null)} />
+      {/* prevent unused-import warning when Loader2 is needed */}
+      {false && <Loader2 />}
     </div>
   );
 }
