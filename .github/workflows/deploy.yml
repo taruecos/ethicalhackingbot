@@ -49,6 +49,8 @@ jobs:
           echo "Dashboard never responded 200/307" >&2
           exit 1
 
-      - name: Prune old images
-        if: success()
-        run: docker image prune -af --filter "until=24h" || true
+      - name: Prune Docker cache
+        if: always()
+        run: |
+          docker builder prune -f || true
+          docker image prune -af --filter "until=24h" || true
