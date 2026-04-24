@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Plus,
   Trash2,
@@ -39,12 +39,53 @@ interface Program {
   reqHeaders: string[];
 }
 
-const PROGRAMS: Program[] = [
-  { id: "hackerone", name: "HackerOne Main", bountyMin: 50, bountyMax: 15000, industry: "Technology", safeHarbour: true, automatedStatus: "ok", scope: ["*.hackerone.com", "api.hackerone.com", "app.hackerone.com", "hackerone.com"], userAgent: "EHBScanner/1.0", reqHeaders: ["X-Scanner-ID: ehb-{scan_id}"] },
-  { id: "bugcrowd", name: "Bugcrowd Platform", bountyMin: 25, bountyMax: 5000, industry: "Technology", safeHarbour: true, automatedStatus: "forbidden", scope: ["*.bugcrowd.com", "app.bugcrowd.com"], userAgent: "Not allowed", reqHeaders: [] },
-  { id: "intigriti", name: "Intigriti Core", bountyMin: 50, bountyMax: 10000, industry: "Technology", safeHarbour: true, automatedStatus: "conditional", scope: ["*.intigriti.com", "api.intigriti.com", "portal.intigriti.com"], userAgent: "EHBScanner/1.0", reqHeaders: ["X-Bug-Bounty: true", "X-Rate-Limit: 30"] },
-  { id: "yeswehack", name: "YesWeHack Programs", bountyMin: 50, bountyMax: 8000, industry: "Technology", safeHarbour: true, automatedStatus: "ok", scope: ["*.yeswehack.com", "auth.yeswehack.com", "api.yeswehack.com"], userAgent: "EHBScanner/1.0", reqHeaders: [] },
-];
+interface ApiProgram {
+  id: string;
+  name: string;
+  slug: string;
+  industry: string | null;
+  minBounty: number | null;
+  maxBounty: number | null;
+  scope: unknown;
+  compliance: Record<string, unknown> | null;
+}
+
+function mapApiToProgram(p: ApiProgram): Program {
+  const compliance = (p.compliance ?? {}) as Record<string, unknown>;
+  const toolingStatus = compliance.automatedToolingStatus as string | undefined;
+  let automatedStatus: ComplianceStatus = "unknown";
+  if (toolingStatus === "allowed") automatedStatus = "ok";
+  else if (toolingStatus === "not_allowed") automatedStatus = "forbidden";
+  else if (toolingStatus === "conditional") automatedStatus = "conditional";
+
+  const safeHarbour = Boolean(compliance.safeHarbour);
+  const userAgent = (compliance.userAgent as string) || "EHBScanner/1.0";
+  const requestHeader = compliance.requestHeader as string | null | undefined;
+  const reqHeaders = requestHeader ? [requestHeader] : [];
+
+  // scope is an array of {id, type, endpoint, tier, description}
+  const scopeArr: string[] = [];
+  if (Array.isArray(p.scope)) {
+    for (const entry of p.scope) {
+      const e = entry as Record<string, unknown>;
+      const endpoint = e?.endpoint as string | undefined;
+      if (endpoint) scopeArr.push(endpoint);
+    }
+  }
+
+  return {
+    id: p.id,
+    name: p.name,
+    bountyMin: p.minBounty ?? 0,
+    bountyMax: p.maxBounty ?? 0,
+    industry: p.industry ?? "—",
+    safeHarbour,
+    automatedStatus,
+    scope: scopeArr,
+    userAgent,
+    reqHeaders,
+  };
+}
 
 const MODULES = [
   { id: "idor", label: "IDOR", desc: "Insecure Direct Object References — sequential ID attacks" },
@@ -135,9 +176,38 @@ export function ComposeTab() {
   const [touched, setTouched] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [launchSuccess, setLaunchSuccess] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const [tooltipOpen, setTooltipOpen] = useState(false);
 
-  const selectedProgram = PROGRAMS.find((p) => p.id === selectedProgramId) ?? null;
+  const [programs, setPrograms] = useState<Program[]>([]);
+  const [programsLoading, setProgramsLoading] = useState(true);
+  const [programsError, setProgramsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setProgramsLoading(true);
+      setProgramsError(null);
+      try {
+        const res = await fetch("/api/programs?limit=500", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const list = (json.programs ?? []) as ApiProgram[];
+        if (!cancelled) setPrograms(list.map(mapApiToProgram));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Network error";
+        if (!cancelled) setProgramsError(msg);
+      } finally {
+        if (!cancelled) setProgramsLoading(false);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectedProgram = programs.find((p) => p.id === selectedProgramId) ?? null;
   const complianceStatus: ComplianceStatus = selectedProgram?.automatedStatus ?? "unknown";
   const complianceCfg = COMPLIANCE_CONFIG[complianceStatus];
 
@@ -166,22 +236,49 @@ export function ComposeTab() {
   const handleProgramChange = (id: string) => {
     setSelectedProgramId(id);
     if (useProgramScope) {
-      const prog = PROGRAMS.find((p) => p.id === id);
+      const prog = programs.find((p) => p.id === id);
       if (prog) {
         setScopeEntries(prog.scope.map((url, i) => ({ id: `prog-${i}`, url, type: "wildcard" })));
       }
     }
   };
 
-  const handleLaunch = () => {
+  const handleLaunch = async () => {
     setTouched(true);
+    setLaunchError(null);
     if (!isValid) return;
     setLaunching(true);
-    setTimeout(() => {
-      setLaunching(false);
+    try {
+      const payload = {
+        domain: domain.trim(),
+        programId: selectedProgramId || null,
+        depth,
+        modules: Array.from(checkedModules),
+        rateLimit,
+        scope: scopeEntries.filter((e) => e.url.trim()).map((e) => ({ url: e.url.trim(), type: e.type })),
+        rulesOfEngagement: {
+          safeHarbour: safeHarbourChecked,
+          userAgent: selectedProgram?.userAgent ?? "EHBScanner/1.0",
+          requestHeaders: selectedProgram?.reqHeaders ?? [],
+          automatedToolingStatus: complianceStatus,
+        },
+      };
+      const res = await fetch("/api/scans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json?.error || `HTTP ${res.status}`);
+      }
       setLaunchSuccess(true);
       setTimeout(() => setLaunchSuccess(false), 3000);
-    }, 2000);
+    } catch (e) {
+      setLaunchError(e instanceof Error ? e.message : "Failed to launch scan");
+    } finally {
+      setLaunching(false);
+    }
   };
 
   const selectStyle: React.CSSProperties = {
@@ -215,12 +312,20 @@ export function ComposeTab() {
             <InlineInput value={domain} onChange={setDomain} placeholder="api.example.com" prefix="https://" error={touched && errors.domain ? errors.domain : undefined} />
 
             <div>
-              <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginBottom: 6 }}>
-                Program <span style={{ color: ds.text.muted, fontStyle: "italic" }}>(optional)</span>
+              <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                <span>
+                  Program <span style={{ color: ds.text.muted, fontStyle: "italic" }}>(optional)</span>
+                </span>
+                {programsLoading && <Loader2 size={11} className="animate-spin" style={{ color: ds.text.muted }} />}
+                {programsError && (
+                  <span style={{ color: ds.severity.critical, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                    <AlertCircle size={11} /> Couldn't load programs
+                  </span>
+                )}
               </div>
-              <select value={selectedProgramId} onChange={(e) => handleProgramChange(e.target.value)} style={selectStyle}>
+              <select value={selectedProgramId} onChange={(e) => handleProgramChange(e.target.value)} style={selectStyle} disabled={programsLoading}>
                 <option value="">— No program / custom target —</option>
-                {PROGRAMS.map((p) => (
+                {programs.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
                   </option>
@@ -424,6 +529,12 @@ export function ComposeTab() {
           <DSButton variant="primary" size="lg" icon={launching ? <Loader2 size={15} className="animate-spin" /> : undefined} onClick={handleLaunch} style={{ width: "100%", opacity: isValid ? 1 : 0.4, cursor: isValid ? "pointer" : "not-allowed" }}>
             {launchSuccess ? "✓ Scan queued successfully" : launching ? "Queuing scan…" : "Launch Scan"}
           </DSButton>
+          {launchError && (
+            <div style={{ marginTop: 10, display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 12px", borderRadius: ds.radius.md, backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40` }}>
+              <AlertCircle size={13} style={{ color: ds.severity.critical, flexShrink: 0, marginTop: 1 }} />
+              <div style={{ fontSize: ds.size.xs, color: ds.severity.critical }}>{launchError}</div>
+            </div>
+          )}
         </div>
       </div>
 

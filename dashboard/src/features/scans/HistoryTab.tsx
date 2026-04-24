@@ -1,38 +1,39 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
-import { MoreHorizontal, ExternalLink, RefreshCw, Trash2, Search, History } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MoreHorizontal, ExternalLink, RefreshCw, Trash2, Search, History, WifiOff, RotateCcw, Loader2 } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSCard } from "@/components/ds/DSCard";
 import { DSButton } from "@/components/ds/DSButton";
 
+type ApiStatus = "QUEUED" | "RUNNING" | "COMPLETE" | "ERROR" | "CANCELLED";
 type HistoryStatus = "COMPLETE" | "ERROR" | "CANCELLED";
+const HISTORY_STATUSES: HistoryStatus[] = ["COMPLETE", "ERROR", "CANCELLED"];
 
-interface HistoryScan {
+interface ApiScan {
+  id: string;
+  target: string;
+  status: ApiStatus;
+  programId: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  config: unknown;
+  stats: Record<string, unknown> | null;
+  _count?: { findings: number };
+}
+
+interface HistoryRow {
   id: string;
   target: string;
   program: string;
+  programId: string | null;
   startedAt: string;
+  startedAtMs: number;
   duration: string;
   status: HistoryStatus;
   findings: { critical: number; high: number; medium: number; low: number; info: number };
 }
-
-const HISTORY_DATA: HistoryScan[] = [
-  { id: "h01", target: "api.hackerone.com", program: "HackerOne", startedAt: "2026-04-24 08:12", duration: "12m 34s", status: "COMPLETE", findings: { critical: 1, high: 2, medium: 3, low: 1, info: 4 } },
-  { id: "h02", target: "app.bugcrowd.com", program: "Bugcrowd", startedAt: "2026-04-24 07:45", duration: "8m 12s", status: "COMPLETE", findings: { critical: 0, high: 1, medium: 2, low: 3, info: 5 } },
-  { id: "h03", target: "admin.synack.com", program: "Synack", startedAt: "2026-04-24 07:22", duration: "2m 15s", status: "ERROR", findings: { critical: 0, high: 0, medium: 0, low: 0, info: 0 } },
-  { id: "h04", target: "api.intigriti.com", program: "Intigriti", startedAt: "2026-04-24 06:58", duration: "15m 01s", status: "COMPLETE", findings: { critical: 2, high: 4, medium: 6, low: 2, info: 8 } },
-  { id: "h05", target: "auth.yeswehack.com", program: "YesWeHack", startedAt: "2026-04-24 06:30", duration: "0m 45s", status: "CANCELLED", findings: { critical: 0, high: 0, medium: 0, low: 0, info: 0 } },
-  { id: "h06", target: "shop.hackerone.com", program: "HackerOne", startedAt: "2026-04-23 22:15", duration: "9m 44s", status: "COMPLETE", findings: { critical: 0, high: 1, medium: 4, low: 2, info: 6 } },
-  { id: "h07", target: "cdn.bugcrowd.com", program: "Bugcrowd", startedAt: "2026-04-23 21:08", duration: "6m 58s", status: "COMPLETE", findings: { critical: 0, high: 0, medium: 1, low: 4, info: 3 } },
-  { id: "h08", target: "portal.intigriti.com", program: "Intigriti", startedAt: "2026-04-23 20:30", duration: "11m 22s", status: "COMPLETE", findings: { critical: 1, high: 3, medium: 5, low: 1, info: 7 } },
-  { id: "h09", target: "api.bugbounty.jp", program: "JP Bug", startedAt: "2026-04-23 19:55", duration: "7m 33s", status: "COMPLETE", findings: { critical: 0, high: 2, medium: 3, low: 5, info: 2 } },
-  { id: "h10", target: "app.zerocopter.com", program: "Zerocopter", startedAt: "2026-04-23 18:40", duration: "5m 17s", status: "COMPLETE", findings: { critical: 0, high: 0, medium: 2, low: 3, info: 4 } },
-];
-
-const PROGRAMS_LIST = ["All programs", ...Array.from(new Set(HISTORY_DATA.map((s) => s.program)))];
-const DATE_RANGES = ["Last 24h", "Last 7d", "Last 30d", "All time"];
 
 const STATUS_CONFIG: Record<HistoryStatus, { label: string; color: string; bg: string }> = {
   COMPLETE: { label: "Complete", color: ds.accent.default, bg: ds.accent.bg15 },
@@ -40,15 +41,67 @@ const STATUS_CONFIG: Record<HistoryStatus, { label: string; color: string; bg: s
   CANCELLED: { label: "Cancelled", color: ds.text.muted, bg: "rgba(113,113,122,0.12)" },
 };
 
+const DATE_RANGES: Array<{ id: string; label: string; ms: number | null }> = [
+  { id: "24h", label: "Last 24h", ms: 24 * 60 * 60 * 1000 },
+  { id: "7d", label: "Last 7d", ms: 7 * 24 * 60 * 60 * 1000 },
+  { id: "30d", label: "Last 30d", ms: 30 * 24 * 60 * 60 * 1000 },
+  { id: "all", label: "All time", ms: null },
+];
+
+function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function computeDuration(start: string | null, end: string | null, fallbackCreated: string): string {
+  const startIso = start ?? fallbackCreated;
+  if (!startIso) return "—";
+  const startMs = new Date(startIso).getTime();
+  const endMs = end ? new Date(end).getTime() : startMs;
+  const sec = Math.max(0, Math.round((endMs - startMs) / 1000));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+function extractFindings(stats: Record<string, unknown> | null): HistoryRow["findings"] {
+  const empty = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  if (!stats) return empty;
+  const direct = stats.findings as Record<string, unknown> | undefined;
+  if (direct && typeof direct === "object") {
+    return {
+      critical: Number(direct.critical ?? 0) || 0,
+      high: Number(direct.high ?? 0) || 0,
+      medium: Number(direct.medium ?? 0) || 0,
+      low: Number(direct.low ?? 0) || 0,
+      info: Number(direct.info ?? 0) || 0,
+    };
+  }
+  const sev = stats.severityBreakdown as Record<string, unknown> | undefined;
+  if (sev && typeof sev === "object") {
+    return {
+      critical: Number(sev.critical ?? 0) || 0,
+      high: Number(sev.high ?? 0) || 0,
+      medium: Number(sev.medium ?? 0) || 0,
+      low: Number(sev.low ?? 0) || 0,
+      info: Number(sev.info ?? 0) || 0,
+    };
+  }
+  return empty;
+}
+
 export function HistoryTab() {
-  const [statusFilter, setStatusFilter] = useState<Set<HistoryStatus>>(new Set(["COMPLETE", "ERROR", "CANCELLED"]));
+  const [statusFilter, setStatusFilter] = useState<Set<HistoryStatus>>(new Set(HISTORY_STATUSES));
   const [programFilter, setProgramFilter] = useState("All programs");
-  const [dateRange, setDateRange] = useState("Last 7d");
+  const [dateRange, setDateRange] = useState("7d");
   const [search, setSearch] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [data, setData] = useState(HISTORY_DATA);
-  const [showEmpty, setShowEmpty] = useState(false);
+  const [data, setData] = useState<HistoryRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actioning, setActioning] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -61,6 +114,47 @@ export function HistoryTab() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // The route doesn't support comma-separated statuses; fetch all and filter client-side.
+      const res = await fetch("/api/scans", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const scans = (json.scans ?? []) as ApiScan[];
+      const rows: HistoryRow[] = scans
+        .filter((s) => s.status === "COMPLETE" || s.status === "ERROR" || s.status === "CANCELLED")
+        .map((s) => ({
+          id: s.id,
+          target: s.target,
+          program: s.programId ?? "—",
+          programId: s.programId,
+          startedAt: formatDateTime(s.startedAt ?? s.createdAt),
+          startedAtMs: new Date(s.startedAt ?? s.createdAt).getTime(),
+          duration: computeDuration(s.startedAt, s.finishedAt, s.createdAt),
+          status: s.status as HistoryStatus,
+          findings: extractFindings(s.stats),
+        }));
+      setData(rows);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Network error";
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const programOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of data) if (r.programId) set.add(r.programId);
+    return ["All programs", ...Array.from(set).sort()];
+  }, [data]);
+
   const toggleStatus = (s: HistoryStatus) => {
     setStatusFilter((prev) => {
       const next = new Set(prev);
@@ -71,24 +165,62 @@ export function HistoryTab() {
     });
   };
 
-  const filtered = data.filter((scan) => {
-    if (!statusFilter.has(scan.status)) return false;
-    if (programFilter !== "All programs" && scan.program !== programFilter) return false;
-    if (search && !scan.target.toLowerCase().includes(search.toLowerCase()) && !scan.program.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
+  const filtered = useMemo(() => {
+    const rangeMs = DATE_RANGES.find((r) => r.id === dateRange)?.ms ?? null;
+    const cutoff = rangeMs !== null ? Date.now() - rangeMs : null;
+    const q = search.trim().toLowerCase();
+    return data.filter((scan) => {
+      if (!statusFilter.has(scan.status)) return false;
+      if (programFilter !== "All programs" && scan.programId !== programFilter) return false;
+      if (cutoff !== null && scan.startedAtMs < cutoff) return false;
+      if (q && !scan.target.toLowerCase().includes(q) && !scan.program.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [data, statusFilter, programFilter, dateRange, search]);
 
-  const handleDelete = (id: string) => {
-    setData((prev) => prev.filter((s) => s.id !== id));
-    setDeleteConfirmId(null);
-    setOpenMenuId(null);
+  const handleDelete = async (id: string) => {
+    setActioning(id);
+    try {
+      const res = await fetch(`/api/scans/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setData((prev) => prev.filter((s) => s.id !== id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete");
+    } finally {
+      setDeleteConfirmId(null);
+      setOpenMenuId(null);
+      setActioning(null);
+    }
   };
+
+  const handleRelaunch = async (id: string) => {
+    setActioning(id);
+    try {
+      const res = await fetch(`/api/scans/${id}/relaunch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error || `HTTP ${res.status}`);
+      }
+      setOpenMenuId(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to relaunch");
+    } finally {
+      setActioning(null);
+    }
+  };
+
+  const dateRangeLabel = DATE_RANGES.find((r) => r.id === dateRange)?.label ?? dateRange;
 
   return (
     <div style={{ position: "relative" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 4 }}>
-          {(["COMPLETE", "ERROR", "CANCELLED"] as HistoryStatus[]).map((s) => {
+          {HISTORY_STATUSES.map((s) => {
             const cfg = STATUS_CONFIG[s];
             const active = statusFilter.has(s);
             return (
@@ -107,7 +239,7 @@ export function HistoryTab() {
         <div style={{ width: 1, height: 18, backgroundColor: ds.border.default, flexShrink: 0 }} />
 
         <select value={programFilter} onChange={(e) => setProgramFilter(e.target.value)} style={{ height: 28, padding: "0 8px", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.md, color: ds.text.secondary, fontSize: ds.size.xs, cursor: "pointer", outline: "none", fontFamily: "Inter, sans-serif", colorScheme: "dark" as const }}>
-          {PROGRAMS_LIST.map((p) => (
+          {programOptions.map((p) => (
             <option key={p} value={p}>
               {p}
             </option>
@@ -117,11 +249,11 @@ export function HistoryTab() {
         <div style={{ display: "flex", gap: 4 }}>
           {DATE_RANGES.map((r) => (
             <button
-              key={r}
-              onClick={() => setDateRange(r)}
-              style={{ height: 28, padding: "0 10px", borderRadius: ds.radius.md, border: `1px solid ${dateRange === r ? ds.accent.default : ds.border.default}`, backgroundColor: dateRange === r ? ds.accent.bg15 : "transparent", color: dateRange === r ? ds.accent.default : ds.text.muted, fontSize: ds.size.xs, fontWeight: dateRange === r ? ds.weight.semibold : ds.weight.medium, cursor: "pointer", fontFamily: "Inter, sans-serif", transition: "all 0.1s ease" }}
+              key={r.id}
+              onClick={() => setDateRange(r.id)}
+              style={{ height: 28, padding: "0 10px", borderRadius: ds.radius.md, border: `1px solid ${dateRange === r.id ? ds.accent.default : ds.border.default}`, backgroundColor: dateRange === r.id ? ds.accent.bg15 : "transparent", color: dateRange === r.id ? ds.accent.default : ds.text.muted, fontSize: ds.size.xs, fontWeight: dateRange === r.id ? ds.weight.semibold : ds.weight.medium, cursor: "pointer", fontFamily: "Inter, sans-serif", transition: "all 0.1s ease" }}
             >
-              {r}
+              {r.label}
             </button>
           ))}
         </div>
@@ -131,18 +263,36 @@ export function HistoryTab() {
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search target or program…" style={{ width: "100%", height: 28, boxSizing: "border-box", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.md, fontSize: ds.size.xs, fontFamily: "Inter, sans-serif", color: ds.text.primary, paddingLeft: 26, paddingRight: 8, outline: "none" }} />
         </div>
 
-        <button onClick={() => setShowEmpty(!showEmpty)} style={{ height: 28, padding: "0 10px", borderRadius: ds.radius.md, cursor: "pointer", border: `1px solid ${ds.border.default}`, backgroundColor: "transparent", color: ds.text.muted, fontSize: ds.size.xs, fontFamily: "Inter, sans-serif" }}>
-          {showEmpty ? "Show data" : "Empty state"}
-        </button>
+        <DSButton variant="secondary" size="sm" icon={<RefreshCw size={12} className={loading ? "animate-spin" : ""} />} onClick={load}>
+          {loading ? "Loading…" : "Refresh"}
+        </DSButton>
       </div>
 
-      {showEmpty || filtered.length === 0 ? (
+      {error && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderRadius: ds.radius.lg, backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40`, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <WifiOff size={16} style={{ color: ds.severity.critical, flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.severity.critical }}>Unable to load scan history</div>
+              <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>{error}</div>
+            </div>
+          </div>
+          <DSButton variant="danger" size="sm" icon={<RotateCcw size={12} />} onClick={load}>Retry</DSButton>
+        </div>
+      )}
+
+      {loading && data.length === 0 && !error ? (
+        <DSCard style={{ padding: 48, textAlign: "center" }}>
+          <Loader2 size={28} className="animate-spin" style={{ color: ds.text.muted, margin: "0 auto 14px" }} />
+          <div style={{ fontSize: ds.size.sm, color: ds.text.muted }}>Loading scan history…</div>
+        </DSCard>
+      ) : !error && filtered.length === 0 ? (
         <DSCard style={{ padding: 48, textAlign: "center" }}>
           <History size={36} style={{ color: ds.text.muted, margin: "0 auto 14px" }} />
           <div style={{ fontSize: ds.size.lg, fontWeight: ds.weight.semibold, color: ds.text.secondary, marginBottom: 6 }}>No scan history yet</div>
-          <div style={{ fontSize: ds.size.sm, color: ds.text.muted }}>{filtered.length === 0 && !showEmpty ? "No scans match your current filters." : "Complete your first scan to see history and analytics here."}</div>
+          <div style={{ fontSize: ds.size.sm, color: ds.text.muted }}>{data.length > 0 ? "No scans match your current filters." : "Complete your first scan to see history and analytics here."}</div>
         </DSCard>
-      ) : (
+      ) : !error ? (
         <DSCard style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ display: "grid", gridTemplateColumns: "200px 110px 130px 80px 1fr 90px 40px", gap: 8, padding: "10px 16px", backgroundColor: ds.bg.elevated, borderBottom: `1px solid ${ds.border.default}` }}>
             {["Target", "Program", "Started", "Duration", "Findings", "Status", ""].map((h) => (
@@ -157,8 +307,10 @@ export function HistoryTab() {
                 scan={scan}
                 isLast={i === filtered.length - 1}
                 menuOpen={openMenuId === scan.id}
+                actioning={actioning === scan.id}
                 onOpenMenu={() => setOpenMenuId(openMenuId === scan.id ? null : scan.id)}
                 onDeleteRequest={() => setDeleteConfirmId(scan.id)}
+                onRelaunch={() => handleRelaunch(scan.id)}
                 menuRef={openMenuId === scan.id ? menuRef : null}
               />
             ))}
@@ -168,10 +320,10 @@ export function HistoryTab() {
             <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>
               {filtered.length} scan{filtered.length !== 1 ? "s" : ""} shown
             </span>
-            <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>Range: {dateRange}</span>
+            <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>Range: {dateRangeLabel}</span>
           </div>
         </DSCard>
-      )}
+      ) : null}
 
       {deleteConfirmId && (
         <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, backdropFilter: "blur(4px)" }}>
@@ -193,7 +345,7 @@ export function HistoryTab() {
   );
 }
 
-function TableRow({ scan, isLast, menuOpen, onOpenMenu, onDeleteRequest, menuRef }: { scan: HistoryScan; isLast: boolean; menuOpen: boolean; onOpenMenu: () => void; onDeleteRequest: () => void; menuRef: React.RefObject<HTMLDivElement | null> | null }) {
+function TableRow({ scan, isLast, menuOpen, actioning, onOpenMenu, onDeleteRequest, onRelaunch, menuRef }: { scan: HistoryRow; isLast: boolean; menuOpen: boolean; actioning: boolean; onOpenMenu: () => void; onDeleteRequest: () => void; onRelaunch: () => void; menuRef: React.RefObject<HTMLDivElement | null> | null }) {
   const [rowHovered, setRowHovered] = useState(false);
   const cfg = STATUS_CONFIG[scan.status];
   const totalFindings = Object.values(scan.findings).reduce((a, b) => a + b, 0);
@@ -202,7 +354,7 @@ function TableRow({ scan, isLast, menuOpen, onOpenMenu, onDeleteRequest, menuRef
     <div
       onMouseEnter={() => setRowHovered(true)}
       onMouseLeave={() => setRowHovered(false)}
-      style={{ display: "grid", gridTemplateColumns: "200px 110px 130px 80px 1fr 90px 40px", gap: 8, padding: "12px 16px", alignItems: "center", borderBottom: isLast ? "none" : `1px solid ${ds.border.default}`, backgroundColor: rowHovered ? ds.bg.elevated : "transparent", transition: "background 0.1s ease" }}
+      style={{ display: "grid", gridTemplateColumns: "200px 110px 130px 80px 1fr 90px 40px", gap: 8, padding: "12px 16px", alignItems: "center", borderBottom: isLast ? "none" : `1px solid ${ds.border.default}`, backgroundColor: rowHovered ? ds.bg.elevated : "transparent", transition: "background 0.1s ease", opacity: actioning ? 0.5 : 1 }}
     >
       <div style={{ overflow: "hidden" }}>
         <div style={{ fontSize: ds.size.xs, fontFamily: "monospace", color: ds.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{scan.target}</div>
@@ -240,14 +392,14 @@ function TableRow({ scan, isLast, menuOpen, onOpenMenu, onDeleteRequest, menuRef
           }}
           style={{ width: 28, height: 28, borderRadius: ds.radius.md, border: `1px solid ${menuOpen ? ds.border.default : "transparent"}`, backgroundColor: menuOpen || rowHovered ? ds.bg.elevated : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: ds.text.muted, transition: "all 0.1s ease" }}
         >
-          <MoreHorizontal size={14} />
+          {actioning ? <Loader2 size={14} className="animate-spin" /> : <MoreHorizontal size={14} />}
         </button>
 
-        {menuOpen && (
+        {menuOpen && !actioning && (
           <div style={{ position: "absolute", right: 0, top: 32, zIndex: 100, width: 188, backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, overflow: "hidden", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
-            <MenuItem icon={<ExternalLink size={12} />} label="View findings" sub={`/findings?scan=${scan.id}`} onClick={() => {}} />
+            <MenuItem icon={<ExternalLink size={12} />} label="View findings" sub={`/findings?scan=${scan.id}`} onClick={() => { window.location.href = `/findings?scanId=${scan.id}`; }} />
             <div style={{ height: 1, backgroundColor: ds.border.default }} />
-            <MenuItem icon={<RefreshCw size={12} />} label="Relaunch scan" sub="Opens Compose pre-filled" onClick={() => {}} />
+            <MenuItem icon={<RefreshCw size={12} />} label="Relaunch scan" sub="Creates a fresh QUEUED scan" onClick={onRelaunch} />
             <div style={{ height: 1, backgroundColor: ds.border.default }} />
             <MenuItem icon={<Trash2 size={12} />} label="Delete record" sub="Cannot be undone" danger onClick={onDeleteRequest} />
           </div>
