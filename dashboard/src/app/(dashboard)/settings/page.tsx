@@ -1,14 +1,5 @@
-import { ds } from "@/components/ds/tokens";
+import { SettingsPage } from "@/features/settings/SettingsPage";
 
-export default function SettingsPage() {
-  return (
-    <div style={{ fontFamily: "Inter, sans-serif" }}>
-      <h1 style={{ fontSize: ds.size["3xl"], fontWeight: ds.weight.bold, color: ds.text.primary, margin: 0 }}>
-        Settings
-      </h1>
-      <p style={{ marginTop: 8, fontSize: ds.size.base, color: ds.text.muted }}>
-        General, Intigriti, notifications, API, danger zone.
-      </p>
-    </div>
-  );
+export default function Page() {
+  return <SettingsPage />;
 }

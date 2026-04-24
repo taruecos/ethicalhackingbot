@@ -1,14 +1,5 @@
-import { ds } from "@/components/ds/tokens";
+import { FindingsPage } from "@/features/findings/FindingsPage";
 
-export default function FindingsPage() {
-  return (
-    <div style={{ fontFamily: "Inter, sans-serif" }}>
-      <h1 style={{ fontSize: ds.size["3xl"], fontWeight: ds.weight.bold, color: ds.text.primary, margin: 0 }}>
-        Findings
-      </h1>
-      <p style={{ marginTop: 8, fontSize: ds.size.base, color: ds.text.muted }}>
-        Triage and track vulnerabilities discovered across your scans.
-      </p>
-    </div>
-  );
+export default function Page() {
+  return <FindingsPage />;
 }
