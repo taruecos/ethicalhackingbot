@@ -3,8 +3,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Search, ChevronDown, RotateCcw, X } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
-import type { Severity, FindingStatus } from "./mockData";
-import { ALL_MODULES, ALL_SCANS, ALL_PROGRAMS } from "./mockData";
+import type { Severity, FindingStatus } from "./types";
 
 export interface Filters {
   search: string;
@@ -166,18 +165,21 @@ interface FilterToolbarProps {
   filters: Filters;
   onChange: (f: Filters) => void;
   resultCount: number;
+  allModules: string[];
+  allScans: string[];
+  allPrograms: string[];
 }
 
-export function FilterToolbar({ filters, onChange, resultCount }: FilterToolbarProps) {
+export function FilterToolbar({ filters, onChange, resultCount, allModules, allScans, allPrograms }: FilterToolbarProps) {
   const isFiltered = filters.search !== "" || filters.severities.size < SEV_ORDER.length || filters.statuses.size < STATUS_LIST.length || filters.modules.size > 0 || filters.scans.size > 0 || filters.programs.size > 0;
 
   const update = (partial: Partial<Filters>) => onChange({ ...filters, ...partial });
 
   const FULL_SEVERITIES = new Set(SEV_ORDER);
   const FULL_STATUSES = new Set(STATUS_LIST);
-  const FULL_MODULES = new Set(ALL_MODULES);
-  const FULL_SCANS = new Set(ALL_SCANS);
-  const FULL_PROGRAMS = new Set(ALL_PROGRAMS);
+  const FULL_MODULES = new Set(allModules);
+  const FULL_SCANS = new Set(allScans);
+  const FULL_PROGRAMS = new Set(allPrograms);
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "10px 0" }}>
@@ -205,9 +207,9 @@ export function FilterToolbar({ filters, onChange, resultCount }: FilterToolbarP
         </span>
       )} />
 
-      <FilterChip label="Module" allValues={ALL_MODULES} selected={filters.modules.size > 0 ? filters.modules : FULL_MODULES} fullSet={FULL_MODULES} onSelect={(s) => update({ modules: s.size === FULL_MODULES.size ? new Set() : s })} />
-      <FilterChip label="Scan" allValues={ALL_SCANS} selected={filters.scans.size > 0 ? filters.scans : FULL_SCANS} fullSet={FULL_SCANS} onSelect={(s) => update({ scans: s.size === FULL_SCANS.size ? new Set() : s })} />
-      <FilterChip label="Program" allValues={ALL_PROGRAMS} selected={filters.programs.size > 0 ? filters.programs : FULL_PROGRAMS} fullSet={FULL_PROGRAMS} onSelect={(s) => update({ programs: s.size === FULL_PROGRAMS.size ? new Set() : s })} />
+      <FilterChip label="Module" allValues={allModules} selected={filters.modules.size > 0 ? filters.modules : FULL_MODULES} fullSet={FULL_MODULES} onSelect={(s) => update({ modules: s.size === FULL_MODULES.size ? new Set() : s })} />
+      <FilterChip label="Scan" allValues={allScans} selected={filters.scans.size > 0 ? filters.scans : FULL_SCANS} fullSet={FULL_SCANS} onSelect={(s) => update({ scans: s.size === FULL_SCANS.size ? new Set() : s })} />
+      <FilterChip label="Program" allValues={allPrograms} selected={filters.programs.size > 0 ? filters.programs : FULL_PROGRAMS} fullSet={FULL_PROGRAMS} onSelect={(s) => update({ programs: s.size === FULL_PROGRAMS.size ? new Set() : s })} />
 
       <div style={{ marginLeft: "auto" }}>
         <SortDropdown value={filters.sortBy} onChange={(v) => update({ sortBy: v })} />

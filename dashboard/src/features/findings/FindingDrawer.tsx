@@ -6,7 +6,7 @@ import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
 import { DSBadge } from "@/components/ds/DSBadge";
 import { DSDialog } from "@/components/ds/DSDialog";
-import type { Finding, FindingStatus, Severity } from "./mockData";
+import type { Finding, FindingStatus, Severity } from "./types";
 
 const STATUS_LIST: FindingStatus[] = ["NEW", "CONFIRMED", "FALSE_POSITIVE", "FIXED", "ACCEPTED", "REPORTED"];
 const STATUS_COLORS: Record<FindingStatus, string> = {

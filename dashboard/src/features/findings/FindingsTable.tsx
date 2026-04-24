@@ -5,8 +5,8 @@ import { ShieldCheck, RotateCcw } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSBadge } from "@/components/ds/DSBadge";
 import { DSButton } from "@/components/ds/DSButton";
-import type { Finding, Severity, FindingStatus } from "./mockData";
-import { relativeTime } from "./mockData";
+import type { Finding, Severity, FindingStatus } from "./types";
+import { relativeTime } from "./types";
 
 function cvssColor(score: number): string {
   if (score >= 9.0) return ds.severity.critical;
