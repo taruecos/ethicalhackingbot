@@ -24,6 +24,7 @@ jobs:
         run: |
           cat > .env.docker <<EOF
           POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          DASHBOARD_TOKEN=${{ secrets.DASHBOARD_TOKEN }}
           EOF
           echo "Wrote .env.docker ($(wc -c < .env.docker) bytes)"
 
