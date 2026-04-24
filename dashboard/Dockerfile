@@ -19,7 +19,7 @@ FROM base AS migrator
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY prisma ./prisma
-CMD ["npx", "prisma", "db", "push"]
+CMD ["npx", "prisma", "db", "push", "--accept-data-loss"]
 
 # Production
 FROM base AS runner
