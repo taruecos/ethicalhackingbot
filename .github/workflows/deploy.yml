@@ -1,0 +1,53 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - refactor/nextjs-sole-backend
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, vps, ehb]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Write .env.docker
+        working-directory: dashboard
+        run: |
+          cat > .env.docker <<EOF
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          EOF
+          echo "Wrote .env.docker ($(wc -c < .env.docker) bytes)"
+
+      - name: Build containers
+        working-directory: dashboard
+        run: docker compose --env-file .env.docker build
+
+      - name: Restart containers
+        working-directory: dashboard
+        run: docker compose --env-file .env.docker up -d
+
+      - name: Health check
+        run: |
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -sf -o /dev/null -w "%{http_code}" http://localhost:8080/dashboard | grep -qE "^(200|307|308)$"; then
+              echo "Dashboard is up"
+              exit 0
+            fi
+            echo "Attempt $i — waiting 3s"
+            sleep 3
+          done
+          echo "Dashboard never responded 200/307" >&2
+          exit 1
+
+      - name: Prune old images
+        if: success()
+        run: docker image prune -af --filter "until=24h" || true
