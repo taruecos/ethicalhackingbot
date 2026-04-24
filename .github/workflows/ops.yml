@@ -1,0 +1,74 @@
+name: Ops (diagnostic + cleanup)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'diagnose | clean-docker | clean-all'
+        required: true
+        default: 'diagnose'
+
+jobs:
+  ops:
+    runs-on: [self-hosted, vps, ehb]
+    timeout-minutes: 15
+    steps:
+      - name: Host + disk snapshot
+        run: |
+          echo "=== uname ==="
+          uname -a
+          echo "=== uptime ==="
+          uptime
+          echo "=== free -h ==="
+          free -h
+          echo "=== df -h / ==="
+          df -h /
+          echo "=== df -h (biggest mounts) ==="
+          df -h | sort -rh -k5 | head -10
+          echo "=== /home/atlas usage ==="
+          du -sh /home/atlas/* 2>/dev/null | sort -rh | head -15
+          echo "=== /tmp usage ==="
+          du -sh /tmp 2>/dev/null
+          ls -la /tmp 2>/dev/null | head -20
+
+      - name: Docker snapshot
+        run: |
+          echo "=== docker system df ==="
+          docker system df -v || true
+          echo "=== docker ps -a ==="
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Size}}'
+          echo "=== docker images (top 20 by size) ==="
+          docker images --format '{{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}' | sort -k2 -rh | head -20
+
+      - name: Clean docker (if requested)
+        if: ${{ inputs.action == 'clean-docker' || inputs.action == 'clean-all' }}
+        run: |
+          echo "=== before: docker system df ==="
+          docker system df
+          echo "=== docker builder prune ==="
+          docker builder prune -af || true
+          echo "=== docker image prune ==="
+          docker image prune -af || true
+          echo "=== docker container prune ==="
+          docker container prune -f || true
+          echo "=== docker volume prune (dangling) ==="
+          docker volume prune -f || true
+          echo "=== after: docker system df ==="
+          docker system df
+
+      - name: Clean system caches (if clean-all)
+        if: ${{ inputs.action == 'clean-all' }}
+        run: |
+          echo "=== npm cache clean ==="
+          npm cache clean --force 2>&1 | tail -5 || true
+          echo "=== /tmp cleanup (older than 1d) ==="
+          find /tmp -maxdepth 1 -mtime +1 -not -name 'systemd-*' -not -name 'snap*' -exec rm -rf {} + 2>/dev/null || true
+          echo "=== journalctl vacuum (keep 100M) ==="
+          journalctl --vacuum-size=100M 2>&1 | tail -3 || true
+
+      - name: Final state
+        run: |
+          echo "=== final: free -h ==="
+          free -h
+          echo "=== final: df -h / ==="
+          df -h /
