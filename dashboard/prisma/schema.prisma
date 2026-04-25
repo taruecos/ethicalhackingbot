@@ -190,3 +190,13 @@ model BountyRecord {
   awardedAt   DateTime
   createdAt   DateTime @default(now())
 }
+
+// ── Settings (singleton config) ──
+
+model IntigritiConfig {
+  id            String   @id @default("singleton")
+  token         String?
+  autoSync      Boolean  @default(true)
+  syncInterval  Int      @default(15)
+  updatedAt     DateTime @updatedAt
+}
