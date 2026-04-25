@@ -3,9 +3,17 @@
  * Replaces the Python proxy; Next.js calls Intigriti directly.
  */
 
+import { prisma } from "@/lib/db";
+
 const BASE_URL = "https://api.intigriti.com/external/researcher/v1";
 
-function getToken(): string {
+async function getToken(): Promise<string> {
+  try {
+    const config = await prisma.intigritiConfig.findUnique({ where: { id: "singleton" } });
+    if (config?.token) return config.token;
+  } catch {
+    // Table may not exist yet pre-migration — fall through to env
+  }
   return process.env.INTIGRITI_API_TOKEN || "";
 }
 
@@ -16,9 +24,10 @@ async function intigritiGet(path: string, params?: Record<string, string>) {
       if (v) url.searchParams.set(k, v);
     });
   }
+  const token = await getToken();
   const res = await fetch(url.toString(), {
     headers: {
-      Authorization: `Bearer ${getToken()}`,
+      Authorization: `Bearer ${token}`,
       Accept: "application/json",
     },
     cache: "no-store",
