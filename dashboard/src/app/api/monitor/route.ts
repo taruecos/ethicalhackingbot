@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { getDashboardToken } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -14,9 +15,11 @@ export async function GET() {
 
   // Fetch live data from Python scan service
   try {
+    const token = getDashboardToken();
     const res = await fetch(`${scanServiceUrl}/api/monitor`, {
       cache: "no-store",
       signal: AbortSignal.timeout(3000),
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
       const data = await res.json();

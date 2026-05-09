@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { getDashboardToken, AuthConfigError } from "@/lib/auth";
 
 const scanServiceUrl = process.env.SCAN_SERVICE_URL || "http://localhost:8000";
 
@@ -27,7 +28,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const config = scan.config as Record<string, unknown>;
   const dashboardUrl = process.env.DASHBOARD_URL || "http://localhost:3000";
-  const token = process.env.DASHBOARD_TOKEN || "";
+  let token: string;
+  try {
+    token = getDashboardToken();
+  } catch (err) {
+    if (err instanceof AuthConfigError) {
+      return NextResponse.json(
+        { error: "Server misconfigured: dashboard token not set" },
+        { status: 503 }
+      );
+    }
+    throw err;
+  }
 
   try {
     const compliance = scan.program?.compliance as Record<string, unknown> | null;
@@ -130,7 +142,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     await fetch(`${scanServiceUrl}/api/scan`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify(scanPayload),
     });
 

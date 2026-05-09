@@ -38,7 +38,7 @@ services:
       DATABASE_URL: postgresql://bugbounty:${POSTGRES_PASSWORD}@db:5432/bugbounty
       SCAN_SERVICE_URL: http://scanner:8000
       INTIGRITI_API_TOKEN: ${INTIGRITI_API_TOKEN:-}
-      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:?DASHBOARD_TOKEN must be set in .env.docker (>= 16 chars)}
       DASHBOARD_URL: http://dashboard:3000
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-in-production}
       NODE_ENV: production
@@ -55,6 +55,8 @@ services:
     restart: unless-stopped
     environment:
       SCAN_SERVICE_PORT: "8000"
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:?DASHBOARD_TOKEN must be set in .env.docker (>= 16 chars)}
+      DASHBOARD_ALLOWED_ORIGINS: ${DASHBOARD_ALLOWED_ORIGINS:-http://dashboard:3000}
     deploy:
       resources:
         limits:

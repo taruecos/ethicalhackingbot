@@ -6,6 +6,7 @@ Every scan action is logged with detailed context for the live monitor.
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -16,9 +17,40 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+MIN_TOKEN_LENGTH = 16
+
+
+def _get_expected_token() -> str:
+    token = os.environ.get("DASHBOARD_TOKEN", "")
+    if not token or len(token) < MIN_TOKEN_LENGTH:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Server misconfigured: DASHBOARD_TOKEN must be set and at least {MIN_TOKEN_LENGTH} chars",
+        )
+    return token
+
+
+def require_bearer(authorization: str | None = Header(default=None)) -> None:
+    expected = _get_expected_token()
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    provided = authorization[len("Bearer ") :]
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _allowed_cors_origins() -> list[str]:
+    raw = os.environ.get("DASHBOARD_ALLOWED_ORIGINS", "")
+    if not raw:
+        return [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 from src.utils.http_client import HttpClient
 from src.recon.crawler import EndpointCrawler
@@ -38,9 +70,10 @@ logger = logging.getLogger("scan_service")
 app = FastAPI(title="EthicalHackingBot Scan Service")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # In-memory scan state
@@ -110,7 +143,7 @@ async def health():
     return {"status": "ok", "uptime": time.time() - start_time}
 
 
-@app.get("/api/status")
+@app.get("/api/status", dependencies=[Depends(require_bearer)])
 async def status():
     return {
         "online": True,
@@ -119,7 +152,7 @@ async def status():
     }
 
 
-@app.get("/api/monitor")
+@app.get("/api/monitor", dependencies=[Depends(require_bearer)])
 async def monitor():
     cpu = psutil.cpu_percent(interval=0.1)
     mem = psutil.virtual_memory()
@@ -163,7 +196,7 @@ async def monitor():
     }
 
 
-@app.post("/api/scan")
+@app.post("/api/scan", dependencies=[Depends(require_bearer)])
 async def start_scan(req: ScanRequest):
     if req.scan_id in active_scans:
         raise HTTPException(400, "Scan already running")
@@ -192,19 +225,19 @@ async def start_scan(req: ScanRequest):
     return {"ok": True, "scan_id": req.scan_id}
 
 
-@app.get("/api/scans")
+@app.get("/api/scans", dependencies=[Depends(require_bearer)])
 async def list_scans():
     return {"scans": list(active_scans.values())}
 
 
-@app.get("/api/scan/{scan_id}")
+@app.get("/api/scan/{scan_id}", dependencies=[Depends(require_bearer)])
 async def get_scan(scan_id: str):
     if scan_id not in active_scans:
         raise HTTPException(404, "Scan not found")
     return active_scans[scan_id]
 
 
-@app.post("/api/scan/{scan_id}/cancel")
+@app.post("/api/scan/{scan_id}/cancel", dependencies=[Depends(require_bearer)])
 async def cancel_scan(scan_id: str):
     if scan_id in active_scans:
         active_scans[scan_id]["status"] = "cancelled"

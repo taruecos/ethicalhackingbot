@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { verifyBearer } from "@/lib/auth";
 
 /**
  * Bot callback endpoint — receives scan progress updates from the Python bot.
@@ -9,11 +10,7 @@ import { prisma } from "@/lib/db";
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
-  // Verify bot token
-  const auth = req.headers.get("authorization") || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  const expectedToken = process.env.DASHBOARD_TOKEN || "";
-  if (!token || token !== expectedToken) {
+  if (!verifyBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
