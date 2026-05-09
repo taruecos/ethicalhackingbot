@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { AlertCircle, X, RefreshCw } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
@@ -9,8 +9,8 @@ import type { Filters } from "./FilterToolbar";
 import { BulkActionsBar } from "./BulkActionsBar";
 import { FindingsTable } from "./FindingsTable";
 import { FindingDrawer } from "./FindingDrawer";
-import { FINDINGS, FINDING_STATS } from "./mockData";
-import type { Finding, FindingStatus, Severity } from "./mockData";
+import { mapApiFinding } from "./types";
+import type { Finding, FindingStatus, Severity } from "./types";
 
 const SEV_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 
@@ -24,8 +24,6 @@ function StatPill({ label, value, color }: { label: string; value: number; color
   );
 }
 
-type PageState = "default" | "loading" | "error" | "empty";
-
 export function FindingsPage() {
   const [filters, setFilters] = useState<Filters>({
     ...DEFAULT_FILTERS,
@@ -34,9 +32,39 @@ export function FindingsPage() {
   });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [activeFinding, setActiveFinding] = useState<Finding | null>(null);
-  const [findings, setFindings] = useState<Finding[]>([...FINDINGS]);
-  const [pageState, setPageState] = useState<PageState>("default");
-  const [errorBanner, setErrorBanner] = useState(false);
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadFindings = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/findings", { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const list: Finding[] = (json.findings ?? []).map(mapApiFinding);
+      setFindings(list);
+    } catch (e: any) {
+      setError(e?.message ?? "Network error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadFindings();
+  }, []);
+
+  const allModules = useMemo(() => Array.from(new Set(findings.map((f) => f.module))).sort(), [findings]);
+  const allScans = useMemo(() => Array.from(new Set(findings.map((f) => f.scanName))).sort(), [findings]);
+  const allPrograms = useMemo(() => Array.from(new Set(findings.map((f) => f.program))).sort(), [findings]);
+
+  const stats = useMemo(() => ({
+    total: findings.length,
+    critical: findings.filter((f) => f.severity === "critical").length,
+    newCount: findings.filter((f) => f.status === "NEW").length,
+  }), [findings]);
 
   const filtered = useMemo(() => {
     let result = findings.filter((f) => {
@@ -75,13 +103,40 @@ export function FindingsPage() {
   const handleSelectAll = (v: boolean) => setSelected(v ? new Set(filtered.map((f) => f.id)) : new Set());
   const clearSelection = () => setSelected(new Set());
 
-  const bulkStatusChange = (status: FindingStatus) => {
+  const patchFinding = async (id: string, body: Partial<{ status: FindingStatus; falsePositive: boolean }>) => {
+    try {
+      await fetch(`/api/findings/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(body),
+      });
+    } catch {
+      // ignore — list refresh below
+    }
+  };
+
+  const deleteFinding = async (id: string) => {
+    try {
+      await fetch(`/api/findings/${id}`, { method: "DELETE", credentials: "same-origin" });
+    } catch {
+      // ignore
+    }
+  };
+
+  const bulkStatusChange = async (status: FindingStatus) => {
+    const ids = Array.from(selected);
     setFindings((prev) => prev.map((f) => (selected.has(f.id) ? { ...f, status } : f)));
     clearSelection();
+    await Promise.all(ids.map((id) => patchFinding(id, { status })));
+    await loadFindings();
   };
-  const bulkDelete = () => {
+  const bulkDelete = async () => {
+    const ids = Array.from(selected);
     setFindings((prev) => prev.filter((f) => !selected.has(f.id)));
     clearSelection();
+    await Promise.all(ids.map((id) => deleteFinding(id)));
+    await loadFindings();
   };
   const bulkExport = () => {
     const rows = filtered.filter((f) => selected.has(f.id));
@@ -111,13 +166,15 @@ export function FindingsPage() {
     clearSelection();
   };
 
-  const handleStatusChange = (id: string, status: FindingStatus) => {
+  const handleStatusChange = async (id: string, status: FindingStatus) => {
     setFindings((prev) => prev.map((f) => (f.id === id ? { ...f, status } : f)));
     setActiveFinding((prev) => (prev?.id === id ? { ...prev, status } : prev));
+    await patchFinding(id, { status });
   };
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     setFindings((prev) => prev.filter((f) => f.id !== id));
     setActiveFinding(null);
+    await deleteFinding(id);
   };
 
   const resetFilters = () =>
@@ -127,27 +184,21 @@ export function FindingsPage() {
       statuses: new Set(["NEW", "CONFIRMED", "FALSE_POSITIVE", "FIXED", "ACCEPTED", "REPORTED"] as FindingStatus[]),
     });
 
-  const isLoading = pageState === "loading";
-  const showError = pageState === "error" || errorBanner;
-
   return (
     <div>
-      {showError && (
+      {error && (
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 20, padding: "12px 16px", backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40`, borderRadius: ds.radius.lg }}>
           <AlertCircle size={15} style={{ color: ds.severity.critical, flexShrink: 0, marginTop: 1 }} />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.severity.critical, marginBottom: 3 }}>Failed to load findings</div>
-            <div style={{ fontSize: ds.size.xs, color: ds.text.muted }}>Could not connect to the findings service. Check your scanner configuration and try again.</div>
+            <div style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{error}</div>
           </div>
           <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-            <DSButton variant="secondary" size="sm" icon={<RefreshCw size={11} />} onClick={() => setPageState("default")}>
+            <DSButton variant="secondary" size="sm" icon={<RefreshCw size={11} />} onClick={loadFindings}>
               Retry
             </DSButton>
             <button
-              onClick={() => {
-                setErrorBanner(false);
-                if (pageState === "error") setPageState("default");
-              }}
+              onClick={() => setError(null)}
               style={{ background: "none", border: "none", cursor: "pointer", color: ds.text.muted, display: "flex", padding: 2 }}
             >
               <X size={13} />
@@ -160,26 +211,10 @@ export function FindingsPage() {
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <h1 style={{ margin: 0, fontSize: ds.size["3xl"], fontWeight: ds.weight.bold, color: ds.text.primary, lineHeight: 1.2 }}>Findings</h1>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-            <StatPill label="Total" value={FINDING_STATS.total} color={ds.text.secondary} />
-            <StatPill label="Critical" value={FINDING_STATS.critical} color={ds.severity.critical} />
-            <StatPill label="New" value={FINDING_STATS.newCount} color={ds.severity.info} />
+            <StatPill label="Total" value={stats.total} color={ds.text.secondary} />
+            <StatPill label="Critical" value={stats.critical} color={ds.severity.critical} />
+            <StatPill label="New" value={stats.newCount} color={ds.severity.info} />
           </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg }}>
-          <span style={{ fontSize: 10, color: ds.text.muted, fontWeight: ds.weight.semibold, textTransform: "uppercase", letterSpacing: "0.06em" }}>State</span>
-          {(["default", "loading", "error", "empty"] as PageState[]).map((s) => (
-            <button
-              key={s}
-              onClick={() => {
-                setPageState(s);
-                if (s === "error") setErrorBanner(true);
-                else setErrorBanner(false);
-              }}
-              style={{ height: 22, padding: "0 8px", borderRadius: ds.radius.md, cursor: "pointer", border: `1px solid ${pageState === s ? ds.accent.default : ds.border.default}`, backgroundColor: pageState === s ? ds.accent.bg15 : "transparent", color: pageState === s ? ds.accent.default : ds.text.secondary, fontSize: 10, fontFamily: "Inter, sans-serif" }}
-            >
-              {s}
-            </button>
-          ))}
         </div>
       </div>
 
@@ -187,15 +222,27 @@ export function FindingsPage() {
         {selected.size > 0 ? (
           <BulkActionsBar count={selected.size} onMarkConfirmed={() => bulkStatusChange("CONFIRMED")} onMarkFP={() => bulkStatusChange("FALSE_POSITIVE")} onGenerateReport={bulkReport} onExport={bulkExport} onDelete={bulkDelete} onCancel={clearSelection} />
         ) : (
-          <FilterToolbar filters={filters} onChange={setFilters} resultCount={filtered.length} />
+          <FilterToolbar
+            filters={filters}
+            onChange={setFilters}
+            resultCount={filtered.length}
+            modules={allModules}
+            scans={allScans}
+            programs={allPrograms}
+          />
         )}
       </div>
 
-      {pageState === "empty" ? (
-        <FindingsTable findings={[]} selected={selected} onSelect={handleSelect} onSelectAll={handleSelectAll} onRowClick={setActiveFinding} isFiltered={false} onResetFilters={resetFilters} />
-      ) : (
-        <FindingsTable findings={isLoading ? [] : filtered} loading={isLoading} selected={selected} onSelect={handleSelect} onSelectAll={handleSelectAll} onRowClick={setActiveFinding} isFiltered={isFiltered} onResetFilters={resetFilters} />
-      )}
+      <FindingsTable
+        findings={loading ? [] : filtered}
+        loading={loading}
+        selected={selected}
+        onSelect={handleSelect}
+        onSelectAll={handleSelectAll}
+        onRowClick={setActiveFinding}
+        isFiltered={isFiltered}
+        onResetFilters={resetFilters}
+      />
 
       <FindingDrawer finding={activeFinding} onClose={() => setActiveFinding(null)} onStatusChange={handleStatusChange} onDelete={handleDelete} />
     </div>

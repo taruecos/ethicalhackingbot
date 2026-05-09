@@ -2,9 +2,6 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import {
-  Cpu,
-  MemoryStick,
-  HardDrive,
   Clock,
   Play,
   X,
@@ -22,65 +19,26 @@ import { DSButton } from "@/components/ds/DSButton";
 
 const SCAN_PHASES = ["Init", "Recon", "Scan", "Analysis", "Report"];
 
-const QUEUED_SCANS = [
-  { id: "q1", target: "cdn.bugcrowd.com", program: "Bugcrowd", createdAt: "09:12" },
-  { id: "q2", target: "portal.intigriti.com", program: "Intigriti", createdAt: "09:08" },
-  { id: "q3", target: "api.bugbounty.jp", program: "BugBounty JP", createdAt: "08:55" },
-];
-
-interface RunningScan {
+interface ApiScan {
   id: string;
   target: string;
-  program: string;
-  phase: number;
-  currentModule: string;
-  endpointsDiscovered: number;
-  endpointsScanned: number;
-  elapsed: string;
-  eta: string;
-  findings: { critical: number; high: number; medium: number; low: number; info: number };
-  hasError?: boolean;
-  errorMsg?: string;
+  status: "QUEUED" | "RUNNING" | "COMPLETE" | "ERROR" | "CANCELLED";
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  programId: string | null;
+  config: any;
+  stats: any;
+  _count?: { findings: number };
 }
 
-const INITIAL_RUNNING: RunningScan[] = [
-  {
-    id: "r1",
-    target: "api.hackerone.com",
-    program: "HackerOne",
-    phase: 2,
-    currentModule: "SQLi Scanner",
-    endpointsDiscovered: 247,
-    endpointsScanned: 156,
-    elapsed: "8m 42s",
-    eta: "~3m",
-    findings: { critical: 1, high: 2, medium: 3, low: 1, info: 4 },
-  },
-];
-
-const INITIAL_LOGS = [
-  { id: 1, time: "09:22:14", level: "INFO", module: "Core", message: "Scan initiated for api.hackerone.com" },
-  { id: 2, time: "09:22:14", level: "DEBUG", module: "DNS", message: "Resolving api.hackerone.com → 104.18.22.47" },
-  { id: 3, time: "09:22:15", level: "INFO", module: "Recon", message: "Starting subdomain enumeration" },
-  { id: 4, time: "09:22:16", level: "DEBUG", module: "HTTP", message: "Probing /robots.txt → 200 OK (48ms)" },
-  { id: 5, time: "09:22:17", level: "INFO", module: "Recon", message: "Found 247 unique endpoints across 3 subdomains" },
-  { id: 6, time: "09:22:18", level: "INFO", module: "SQLi", message: "Starting injection probes on 156 endpoints" },
-  { id: 7, time: "09:22:20", level: "WARN", module: "RateLmt", message: "Request rate approaching limit (58/60 req/min)" },
-  { id: 8, time: "09:22:21", level: "DEBUG", module: "HTTP", message: "GET /api/users?id=1 → 200 (123ms)" },
-  { id: 9, time: "09:22:22", level: "ERROR", module: "SQLi", message: "Connection timeout on /api/reports (5000ms)" },
-  { id: 10, time: "09:22:23", level: "INFO", module: "SQLi", message: "[FINDING] Possible SQLi in /api/search?q param" },
-];
-
-const STREAMING_LOGS = [
-  { level: "INFO", module: "SQLi", message: "Testing blind injection on /api/search" },
-  { level: "DEBUG", module: "HTTP", message: "GET /api/items?id=1 AND 1=1 → 200 (98ms)" },
-  { level: "INFO", module: "SSRF", message: "Probing metadata endpoint via /api/proxy" },
-  { level: "WARN", module: "WAF", message: "WAF detected — throttling request rate to 20/min" },
-  { level: "INFO", module: "CSRF", message: "Checking CSRF tokens on state-change endpoints" },
-  { level: "DEBUG", module: "HTTP", message: "POST /api/transfer → 200 (201ms)" },
-  { level: "ERROR", module: "Network", message: "Temporary connection reset by peer at /api/bulk" },
-  { level: "INFO", module: "IDOR", message: "[FINDING] IDOR via UUID enumeration at /api/docs/{uuid}" },
-];
+interface LogEntry {
+  id: number;
+  time: string;
+  level: string;
+  module: string;
+  message: string;
+}
 
 const LEVEL_COLORS: Record<string, string> = {
   INFO: ds.accent.default,
@@ -89,36 +47,77 @@ const LEVEL_COLORS: Record<string, string> = {
   ERROR: ds.severity.critical,
 };
 
-type DemoVariant = "running" | "empty" | "error";
+function formatHm(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function formatElapsed(startedAt: string | null): string {
+  if (!startedAt) return "—";
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 1000));
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+function getProgress(scan: ApiScan): { discovered: number; scanned: number; phase: number; module: string } {
+  const stats = scan.stats || {};
+  return {
+    discovered: Number(stats.endpointsDiscovered ?? 0),
+    scanned: Number(stats.endpointsScanned ?? 0),
+    phase: Number(stats.phase ?? 0),
+    module: String(stats.currentModule ?? "—"),
+  };
+}
+
+function getFindingsBreakdown(scan: ApiScan): { critical: number; high: number; medium: number; low: number; info: number } {
+  const stats = scan.stats || {};
+  const breakdown = stats.findings || stats.findingsBreakdown;
+  if (breakdown && typeof breakdown === "object") {
+    return {
+      critical: Number(breakdown.critical ?? 0),
+      high: Number(breakdown.high ?? 0),
+      medium: Number(breakdown.medium ?? 0),
+      low: Number(breakdown.low ?? 0),
+      info: Number(breakdown.info ?? 0),
+    };
+  }
+  return { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+}
 
 export function ActiveTab() {
-  const [variant, setVariant] = useState<DemoVariant>("running");
-  const [queuedScans, setQueuedScans] = useState(QUEUED_SCANS);
-  const [runningScans, setRunningScans] = useState<RunningScan[]>(INITIAL_RUNNING);
-  const [expandedLogs, setExpandedLogs] = useState<Set<string>>(new Set(["r1"]));
-  const [logs, setLogs] = useState(INITIAL_LOGS);
+  const [scans, setScans] = useState<ApiScan[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedLogs, setExpandedLogs] = useState<Set<string>>(new Set());
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState<Set<string>>(new Set(["INFO", "WARN", "ERROR", "DEBUG"]));
   const [logSearch, setLogSearch] = useState("");
   const [logModule, setLogModule] = useState("all");
   const [autoScroll, setAutoScroll] = useState(true);
   const logsEndRef = useRef<HTMLDivElement>(null);
-  const nextLogId = useRef(INITIAL_LOGS.length + 1);
+
+  const loadScans = async () => {
+    try {
+      const res = await fetch("/api/scans", { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const all: ApiScan[] = json.scans ?? [];
+      setScans(all.filter((s) => s.status === "QUEUED" || s.status === "RUNNING" || s.status === "ERROR"));
+      setError(null);
+    } catch (e: any) {
+      setError(e?.message ?? "Network error");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (variant !== "running") return;
-    let idx = 0;
-    const interval = setInterval(() => {
-      const entry = STREAMING_LOGS[idx % STREAMING_LOGS.length];
-      const now = new Date();
-      const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
-      setLogs((prev) => {
-        const newLogs = [...prev, { id: nextLogId.current++, time: timeStr, ...entry }];
-        return newLogs.slice(-200);
-      });
-      idx++;
-    }, 1800);
+    loadScans();
+    const interval = setInterval(loadScans, 5000);
     return () => clearInterval(interval);
-  }, [variant]);
+  }, []);
 
   useEffect(() => {
     if (autoScroll && logsEndRef.current) {
@@ -126,21 +125,24 @@ export function ActiveTab() {
     }
   }, [logs, autoScroll]);
 
-  useEffect(() => {
-    if (variant !== "running") return;
-    const interval = setInterval(() => {
-      setRunningScans((prev) =>
-        prev.map((scan) => ({
-          ...scan,
-          endpointsScanned: Math.min(scan.endpointsDiscovered, scan.endpointsScanned + 2),
-        })),
-      );
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [variant]);
+  const startQueued = async (id: string) => {
+    try {
+      await fetch(`/api/scans/${id}/start`, { method: "POST", credentials: "same-origin" });
+      await loadScans();
+    } catch {
+      // ignore — list will refresh
+    }
+  };
 
-  const startQueued = (id: string) => setQueuedScans((prev) => prev.filter((s) => s.id !== id));
-  const cancelScan = (id: string) => setRunningScans((prev) => prev.filter((s) => s.id !== id));
+  const cancelScan = async (id: string) => {
+    try {
+      await fetch(`/api/scans/${id}/cancel`, { method: "POST", credentials: "same-origin" });
+      await loadScans();
+    } catch {
+      // ignore
+    }
+  };
+
   const toggleLogs = (id: string) =>
     setExpandedLogs((prev) => {
       const next = new Set(prev);
@@ -148,6 +150,7 @@ export function ActiveTab() {
       else next.add(id);
       return next;
     });
+
   const toggleLevel = (level: string) =>
     setLogFilter((prev) => {
       const next = new Set(prev);
@@ -156,58 +159,43 @@ export function ActiveTab() {
       return next;
     });
 
+  const queuedScans = (scans ?? []).filter((s) => s.status === "QUEUED");
+  const runningScans = (scans ?? []).filter((s) => s.status === "RUNNING" || s.status === "ERROR");
+
   const filteredLogs = logs.filter(
     (l) =>
       logFilter.has(l.level) &&
       (logModule === "all" || l.module === logModule) &&
-      (logSearch === "" || l.message.toLowerCase().includes(logSearch.toLowerCase()) || l.module.toLowerCase().includes(logSearch.toLowerCase())),
+      (logSearch === "" ||
+        l.message.toLowerCase().includes(logSearch.toLowerCase()) ||
+        l.module.toLowerCase().includes(logSearch.toLowerCase())),
   );
 
   const logModules = ["all", ...Array.from(new Set(logs.map((l) => l.module)))];
 
-  const errorScan: RunningScan = {
-    id: "err1",
-    target: "admin.synack.com",
-    program: "Synack",
-    phase: 1,
-    currentModule: "Recon",
-    endpointsDiscovered: 12,
-    endpointsScanned: 12,
-    elapsed: "2m 15s",
-    eta: "N/A",
-    findings: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
-    hasError: true,
-    errorMsg: "Host unreachable: Connection refused on port 443 after 3 retries (ECONNREFUSED)",
-  };
+  if (loading && !scans) {
+    return (
+      <div style={{ padding: 48, textAlign: "center", color: ds.text.muted, fontSize: ds.size.sm }}>
+        Loading scans…
+      </div>
+    );
+  }
 
-  const displayRunning = variant === "error" ? [errorScan] : variant === "running" ? runningScans : [];
+  if (error) {
+    return (
+      <DSCard style={{ padding: 24, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <AlertCircle size={16} style={{ color: ds.severity.critical }} />
+          <span style={{ fontSize: ds.size.sm, color: ds.severity.critical }}>Failed to load scans: {error}</span>
+        </div>
+        <DSButton variant="secondary" size="sm" icon={<RefreshCw size={11} />} onClick={loadScans}>Retry</DSButton>
+      </DSCard>
+    );
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "7px 12px", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, flexWrap: "wrap" }}>
-        <span style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium, textTransform: "uppercase", letterSpacing: "0.07em" }}>Preview</span>
-        {(["running", "empty", "error"] as DemoVariant[]).map((v) => (
-          <button
-            key={v}
-            onClick={() => setVariant(v)}
-            style={{ height: 24, padding: "0 10px", borderRadius: ds.radius.md, border: `1px solid ${variant === v ? ds.accent.default : ds.border.default}`, backgroundColor: variant === v ? ds.accent.bg15 : "transparent", color: variant === v ? ds.accent.default : ds.text.secondary, fontSize: ds.size.xs, fontWeight: ds.weight.medium, cursor: "pointer", fontFamily: "Inter, sans-serif", transition: "all 0.1s ease", textTransform: "capitalize" }}
-          >
-            {v}
-          </button>
-        ))}
-      </div>
-
-      <div>
-        <SectionTitle>System Metrics</SectionTitle>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
-          <MetricCard label="CPU Usage" value="34%" sub="4-core · 3.2GHz" icon={<Cpu size={14} style={{ color: ds.text.muted }} />} pct={34} color={ds.accent.default} />
-          <MetricCard label="RAM" value="67%" sub="10.7 / 16 GB" icon={<MemoryStick size={14} style={{ color: ds.text.muted }} />} pct={67} color={ds.severity.high} />
-          <MetricCard label="Disk" value="182 GB" sub="used / 500 GB" icon={<HardDrive size={14} style={{ color: ds.text.muted }} />} pct={36} color={ds.severity.info} />
-          <MetricCard label="Uptime" value="14d 7h" sub="since last reboot" icon={<Clock size={14} style={{ color: ds.text.muted }} />} pct={null} color={ds.accent.default} />
-        </div>
-      </div>
-
-      {variant !== "empty" && queuedScans.length > 0 && (
+      {queuedScans.length > 0 && (
         <div>
           <SectionTitle>
             Queued <span style={{ color: ds.text.muted, fontWeight: ds.weight.regular }}>({queuedScans.length})</span>
@@ -218,7 +206,7 @@ export function ActiveTab() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.medium, color: ds.text.primary, fontFamily: "monospace" }}>{scan.target}</div>
                   <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>
-                    {scan.program} · queued at {scan.createdAt}
+                    Queued at {formatHm(scan.createdAt)}
                   </div>
                 </div>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: ds.radius.md, backgroundColor: "rgba(113,113,122,0.12)", color: ds.text.muted, fontSize: ds.size.xs, fontWeight: ds.weight.medium }}>
@@ -237,28 +225,25 @@ export function ActiveTab() {
       <div>
         <SectionTitle>
           Running{" "}
-          {variant === "running" && <span style={{ color: ds.text.muted, fontWeight: ds.weight.regular }}>({displayRunning.length})</span>}
+          {runningScans.length > 0 && <span style={{ color: ds.text.muted, fontWeight: ds.weight.regular }}>({runningScans.length})</span>}
         </SectionTitle>
 
-        {variant === "empty" ? (
+        {runningScans.length === 0 ? (
           <DSCard style={{ padding: 48, textAlign: "center" }}>
             <ShieldCheck size={40} style={{ color: ds.text.muted, margin: "0 auto 14px" }} />
-            <div style={{ fontSize: ds.size.lg, fontWeight: ds.weight.semibold, color: ds.text.secondary, marginBottom: 6 }}>All clear — queue a new scan</div>
-            <div style={{ fontSize: ds.size.sm, color: ds.text.muted, marginBottom: 20 }}>No scans are currently running. The system is idle and ready.</div>
-            <DSButton variant="primary" size="md" icon={<Play size={13} />}>
-              Compose new scan
-            </DSButton>
+            <div style={{ fontSize: ds.size.lg, fontWeight: ds.weight.semibold, color: ds.text.secondary, marginBottom: 6 }}>All clear — no active scans</div>
+            <div style={{ fontSize: ds.size.sm, color: ds.text.muted, marginBottom: 20 }}>The system is idle. Queue a new scan from the Compose tab.</div>
           </DSCard>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {displayRunning.map((scan) => (
+            {runningScans.map((scan) => (
               <RunningCard key={scan.id} scan={scan} expanded={expandedLogs.has(scan.id)} onToggleLogs={() => toggleLogs(scan.id)} onCancel={() => cancelScan(scan.id)} />
             ))}
           </div>
         )}
       </div>
 
-      {variant !== "empty" && (
+      {runningScans.length > 0 && (
         <div>
           <SectionTitle>Live Logs</SectionTitle>
           <div style={{ borderRadius: ds.radius.lg, overflow: "hidden", border: `1px solid ${ds.border.default}` }}>
@@ -307,14 +292,20 @@ export function ActiveTab() {
             </div>
 
             <div style={{ height: 340, overflowY: "auto", backgroundColor: "#0a0b0f", padding: "10px 14px", fontFamily: "'JetBrains Mono', monospace" }}>
-              {filteredLogs.map((entry) => (
-                <div key={entry.id} style={{ display: "flex", alignItems: "flex-start", gap: 0, fontSize: 12, lineHeight: "20px", borderBottom: `1px solid rgba(39,39,42,0.15)` }}>
-                  <span style={{ color: "#4b5563", minWidth: 66, flexShrink: 0 }}>{entry.time}</span>
-                  <span style={{ color: LEVEL_COLORS[entry.level] ?? ds.text.muted, minWidth: 50, flexShrink: 0, fontWeight: 500 }}>{entry.level}</span>
-                  <span style={{ color: "#4b5563", minWidth: 60, flexShrink: 0 }}>[{entry.module}]</span>
-                  <span style={{ color: entry.message.includes("[FINDING]") ? ds.severity.high : "#9ca3af", flex: 1 }}>{entry.message}</span>
+              {filteredLogs.length === 0 ? (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: ds.text.muted, fontSize: 12 }}>
+                  No logs streaming yet. Logs will appear here once a scan starts producing output.
                 </div>
-              ))}
+              ) : (
+                filteredLogs.map((entry) => (
+                  <div key={entry.id} style={{ display: "flex", alignItems: "flex-start", gap: 0, fontSize: 12, lineHeight: "20px", borderBottom: `1px solid rgba(39,39,42,0.15)` }}>
+                    <span style={{ color: "#4b5563", minWidth: 66, flexShrink: 0 }}>{entry.time}</span>
+                    <span style={{ color: LEVEL_COLORS[entry.level] ?? ds.text.muted, minWidth: 50, flexShrink: 0, fontWeight: 500 }}>{entry.level}</span>
+                    <span style={{ color: "#4b5563", minWidth: 60, flexShrink: 0 }}>[{entry.module}]</span>
+                    <span style={{ color: entry.message.includes("[FINDING]") ? ds.severity.high : "#9ca3af", flex: 1 }}>{entry.message}</span>
+                  </div>
+                ))
+              )}
               <div ref={logsEndRef} />
             </div>
           </div>
@@ -324,23 +315,24 @@ export function ActiveTab() {
   );
 }
 
-function RunningCard({ scan, expanded, onToggleLogs, onCancel }: { scan: RunningScan; expanded: boolean; onToggleLogs: () => void; onCancel: () => void }) {
-  const pct = Math.round((scan.endpointsScanned / scan.endpointsDiscovered) * 100);
+function RunningCard({ scan, expanded, onToggleLogs, onCancel }: { scan: ApiScan; expanded: boolean; onToggleLogs: () => void; onCancel: () => void }) {
+  const progress = getProgress(scan);
+  const findings = getFindingsBreakdown(scan);
+  const hasError = scan.status === "ERROR";
+  const errorMsg = scan.stats?.error || scan.stats?.errorMessage;
+  const pct = progress.discovered > 0 ? Math.round((progress.scanned / progress.discovered) * 100) : 0;
 
   return (
     <DSCard style={{ padding: 0, overflow: "hidden" }}>
-      {scan.hasError && (
+      {hasError && (
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: "12px 16px", backgroundColor: ds.severity.criticalBg, borderBottom: `1px solid ${ds.severity.critical}40` }}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
             <AlertCircle size={15} style={{ color: ds.severity.critical, flexShrink: 0, marginTop: 1 }} />
             <div>
               <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.severity.critical }}>Scan error</div>
-              <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>{scan.errorMsg}</div>
+              <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>{errorMsg ?? "Scan halted with an error."}</div>
             </div>
           </div>
-          <DSButton variant="secondary" size="sm" icon={<RefreshCw size={11} />}>
-            Resume from checkpoint
-          </DSButton>
         </div>
       )}
 
@@ -348,18 +340,12 @@ function RunningCard({ scan, expanded, onToggleLogs, onCancel }: { scan: Running
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 14 }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-              {!scan.hasError && <Loader2 size={13} className="animate-spin" style={{ color: ds.severity.info }} />}
+              {!hasError && <Loader2 size={13} className="animate-spin" style={{ color: ds.severity.info }} />}
               <span style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.text.primary, fontFamily: "monospace" }}>{scan.target}</span>
-              <span style={{ fontSize: ds.size.xs, color: ds.text.muted, padding: "1px 6px", backgroundColor: ds.bg.elevated, borderRadius: ds.radius.md, border: `1px solid ${ds.border.default}` }}>{scan.program}</span>
             </div>
             <div style={{ fontSize: ds.size.xs, color: ds.text.muted }}>
-              Module: <span style={{ color: ds.text.secondary }}>{scan.currentModule}</span>
-              {" · "}Elapsed: <span style={{ color: ds.text.secondary }}>{scan.elapsed}</span>
-              {!scan.hasError && (
-                <>
-                  {" · "}ETA: <span style={{ color: ds.accent.default }}>{scan.eta}</span>
-                </>
-              )}
+              Module: <span style={{ color: ds.text.secondary }}>{progress.module}</span>
+              {" · "}Elapsed: <span style={{ color: ds.text.secondary }}>{formatElapsed(scan.startedAt)}</span>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -379,8 +365,8 @@ function RunningCard({ scan, expanded, onToggleLogs, onCancel }: { scan: Running
 
         <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
           {SCAN_PHASES.map((phase, idx) => {
-            const isDone = idx < scan.phase;
-            const isActive = idx === scan.phase;
+            const isDone = idx < progress.phase;
+            const isActive = idx === progress.phase;
             return (
               <React.Fragment key={phase}>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
@@ -403,11 +389,11 @@ function RunningCard({ scan, expanded, onToggleLogs, onCancel }: { scan: Running
           })}
         </div>
 
-        {!scan.hasError && (
+        {!hasError && progress.discovered > 0 && (
           <div style={{ marginBottom: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
               <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>
-                {scan.endpointsScanned} / {scan.endpointsDiscovered} endpoints
+                {progress.scanned} / {progress.discovered} endpoints
               </span>
               <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: ds.accent.default }}>{pct}%</span>
             </div>
@@ -419,7 +405,7 @@ function RunningCard({ scan, expanded, onToggleLogs, onCancel }: { scan: Running
 
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>Findings:</span>
-          {Object.entries(scan.findings).map(([sev, count]) => (
+          {Object.entries(findings).map(([sev, count]) => (
             <span
               key={sev}
               style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "1px 6px", borderRadius: ds.radius.md, fontSize: 10, fontWeight: ds.weight.medium, backgroundColor: (ds.severity as any)[`${sev}Bg`], color: (ds.severity as any)[sev] }}
@@ -431,24 +417,6 @@ function RunningCard({ scan, expanded, onToggleLogs, onCancel }: { scan: Running
         </div>
       </div>
     </DSCard>
-  );
-}
-
-function MetricCard({ label, value, sub, icon, pct, color }: { label: string; value: string; sub: string; icon: React.ReactNode; pct: number | null; color: string }) {
-  return (
-    <div style={{ backgroundColor: ds.bg.surface, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, padding: "14px 16px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: ds.weight.medium }}>{label}</span>
-        <div style={{ width: 26, height: 26, borderRadius: ds.radius.md, backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, display: "flex", alignItems: "center", justifyContent: "center" }}>{icon}</div>
-      </div>
-      <div style={{ fontSize: ds.size["2xl"], fontWeight: ds.weight.bold, color: ds.text.primary, marginBottom: 4, fontVariantNumeric: "tabular-nums" }}>{value}</div>
-      {pct !== null && (
-        <div style={{ height: 4, backgroundColor: ds.bg.elevated, borderRadius: 2, overflow: "hidden", marginBottom: 6 }}>
-          <div style={{ width: `${pct}%`, height: "100%", backgroundColor: color, borderRadius: 2, transition: "width 0.5s ease" }} />
-        </div>
-      )}
-      <div style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{sub}</div>
-    </div>
   );
 }
 

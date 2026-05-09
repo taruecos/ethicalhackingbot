@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Plus,
   Trash2,
@@ -26,25 +26,18 @@ interface ScopeEntry {
   type: ScopeEntryType;
 }
 
-interface Program {
+interface ApiProgram {
   id: string;
   name: string;
-  bountyMin: number;
-  bountyMax: number;
-  industry: string;
-  safeHarbour: boolean;
-  automatedStatus: ComplianceStatus;
-  scope: string[];
-  userAgent: string;
-  reqHeaders: string[];
+  slug: string;
+  platform: string;
+  industry: string | null;
+  maxBounty: number | null;
+  minBounty: number | null;
+  currency: string;
+  scope: any;
+  compliance: any;
 }
-
-const PROGRAMS: Program[] = [
-  { id: "hackerone", name: "HackerOne Main", bountyMin: 50, bountyMax: 15000, industry: "Technology", safeHarbour: true, automatedStatus: "ok", scope: ["*.hackerone.com", "api.hackerone.com", "app.hackerone.com", "hackerone.com"], userAgent: "EHBScanner/1.0", reqHeaders: ["X-Scanner-ID: ehb-{scan_id}"] },
-  { id: "bugcrowd", name: "Bugcrowd Platform", bountyMin: 25, bountyMax: 5000, industry: "Technology", safeHarbour: true, automatedStatus: "forbidden", scope: ["*.bugcrowd.com", "app.bugcrowd.com"], userAgent: "Not allowed", reqHeaders: [] },
-  { id: "intigriti", name: "Intigriti Core", bountyMin: 50, bountyMax: 10000, industry: "Technology", safeHarbour: true, automatedStatus: "conditional", scope: ["*.intigriti.com", "api.intigriti.com", "portal.intigriti.com"], userAgent: "EHBScanner/1.0", reqHeaders: ["X-Bug-Bounty: true", "X-Rate-Limit: 30"] },
-  { id: "yeswehack", name: "YesWeHack Programs", bountyMin: 50, bountyMax: 8000, industry: "Technology", safeHarbour: true, automatedStatus: "ok", scope: ["*.yeswehack.com", "auth.yeswehack.com", "api.yeswehack.com"], userAgent: "EHBScanner/1.0", reqHeaders: [] },
-];
 
 const MODULES = [
   { id: "idor", label: "IDOR", desc: "Insecure Direct Object References — sequential ID attacks" },
@@ -63,6 +56,40 @@ const COMPLIANCE_CONFIG: Record<ComplianceStatus, { label: string; color: string
   conditional: { label: "Conditional — read rules carefully", color: ds.severity.high, bg: ds.severity.highBg, icon: <AlertTriangle size={13} /> },
   unknown: { label: "Unknown — select a program", color: ds.text.muted, bg: "rgba(113,113,122,0.1)", icon: <HelpCircle size={13} /> },
 };
+
+function mapAutomatedStatus(prog: ApiProgram | null): ComplianceStatus {
+  if (!prog) return "unknown";
+  const status = prog.compliance?.automatedToolingStatus;
+  if (status === "allowed") return "ok";
+  if (status === "conditional") return "conditional";
+  if (status === "forbidden" || status === "not_allowed") return "forbidden";
+  return "unknown";
+}
+
+function programScopeUrls(prog: ApiProgram | null): string[] {
+  if (!prog) return [];
+  const scope = prog.scope;
+  if (Array.isArray(scope)) {
+    return scope
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        if (entry && typeof entry === "object") return entry.url ?? entry.target ?? entry.endpoint ?? "";
+        return "";
+      })
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function programUserAgent(prog: ApiProgram | null): string {
+  return prog?.compliance?.requiredUserAgent ?? prog?.compliance?.userAgent ?? "Not specified";
+}
+
+function programRequiredHeaders(prog: ApiProgram | null): string[] {
+  const headers = prog?.compliance?.requiredHeaders;
+  if (Array.isArray(headers)) return headers.filter((h) => typeof h === "string");
+  return [];
+}
 
 function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
@@ -124,6 +151,8 @@ function InlineInput({ value, onChange, placeholder, disabled, error, prefix }: 
 }
 
 export function ComposeTab() {
+  const [programs, setPrograms] = useState<ApiProgram[]>([]);
+  const [programsLoading, setProgramsLoading] = useState(true);
   const [domain, setDomain] = useState("");
   const [selectedProgramId, setSelectedProgramId] = useState("");
   const [useProgramScope, setUseProgramScope] = useState(false);
@@ -135,11 +164,33 @@ export function ComposeTab() {
   const [touched, setTouched] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [launchSuccess, setLaunchSuccess] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const [tooltipOpen, setTooltipOpen] = useState(false);
 
-  const selectedProgram = PROGRAMS.find((p) => p.id === selectedProgramId) ?? null;
-  const complianceStatus: ComplianceStatus = selectedProgram?.automatedStatus ?? "unknown";
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch("/api/programs?limit=200", { credentials: "same-origin" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (!cancelled) setPrograms(json.programs ?? []);
+      } catch {
+        // leave empty — composer still works for custom targets
+      } finally {
+        if (!cancelled) setProgramsLoading(false);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectedProgram = programs.find((p) => p.id === selectedProgramId) ?? null;
+  const complianceStatus = mapAutomatedStatus(selectedProgram);
   const complianceCfg = COMPLIANCE_CONFIG[complianceStatus];
+  const scopeUrls = programScopeUrls(selectedProgram);
 
   const errors = {
     domain: !domain.trim() ? "Target domain is required" : "",
@@ -159,29 +210,55 @@ export function ComposeTab() {
   const handleUseProgramScope = (v: boolean) => {
     setUseProgramScope(v);
     if (v && selectedProgram) {
-      setScopeEntries(selectedProgram.scope.map((url, i) => ({ id: `prog-${i}`, url, type: "wildcard" as ScopeEntryType })));
+      setScopeEntries(scopeUrls.map((url, i) => ({ id: `prog-${i}`, url, type: "wildcard" as ScopeEntryType })));
     }
   };
 
   const handleProgramChange = (id: string) => {
     setSelectedProgramId(id);
     if (useProgramScope) {
-      const prog = PROGRAMS.find((p) => p.id === id);
+      const prog = programs.find((p) => p.id === id);
       if (prog) {
-        setScopeEntries(prog.scope.map((url, i) => ({ id: `prog-${i}`, url, type: "wildcard" })));
+        setScopeEntries(programScopeUrls(prog).map((url, i) => ({ id: `prog-${i}`, url, type: "wildcard" })));
       }
     }
   };
 
-  const handleLaunch = () => {
+  const handleLaunch = async () => {
     setTouched(true);
     if (!isValid) return;
     setLaunching(true);
-    setTimeout(() => {
-      setLaunching(false);
+    setLaunchError(null);
+    try {
+      const res = await fetch("/api/scans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          domain,
+          programId: selectedProgramId || null,
+          depth,
+          modules: Array.from(checkedModules),
+          rateLimit,
+          scope: useProgramScope ? scopeUrls : scopeEntries.filter((e) => e.url.trim()).map((e) => ({ url: e.url, type: e.type })),
+          rulesOfEngagement: {
+            safeHarbour: safeHarbourChecked,
+            userAgent: programUserAgent(selectedProgram),
+            requiredHeaders: programRequiredHeaders(selectedProgram),
+          },
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
       setLaunchSuccess(true);
       setTimeout(() => setLaunchSuccess(false), 3000);
-    }, 2000);
+    } catch (e: any) {
+      setLaunchError(e?.message ?? "Failed to queue scan");
+    } finally {
+      setLaunching(false);
+    }
   };
 
   const selectStyle: React.CSSProperties = {
@@ -218,9 +295,9 @@ export function ComposeTab() {
               <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginBottom: 6 }}>
                 Program <span style={{ color: ds.text.muted, fontStyle: "italic" }}>(optional)</span>
               </div>
-              <select value={selectedProgramId} onChange={(e) => handleProgramChange(e.target.value)} style={selectStyle}>
-                <option value="">— No program / custom target —</option>
-                {PROGRAMS.map((p) => (
+              <select value={selectedProgramId} onChange={(e) => handleProgramChange(e.target.value)} style={selectStyle} disabled={programsLoading}>
+                <option value="">{programsLoading ? "Loading programs…" : programs.length === 0 ? "— No programs synced —" : "— No program / custom target —"}</option>
+                {programs.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
                   </option>
@@ -233,7 +310,7 @@ export function ComposeTab() {
                 <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.medium, color: ds.text.primary }}>Use program scope</div>
                 <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>Auto-fill scope entries from selected program</div>
               </div>
-              <Toggle checked={useProgramScope} onChange={handleUseProgramScope} disabled={!selectedProgramId} />
+              <Toggle checked={useProgramScope} onChange={handleUseProgramScope} disabled={!selectedProgramId || scopeUrls.length === 0} />
             </div>
           </div>
         </DSCard>
@@ -403,7 +480,7 @@ export function ComposeTab() {
               <div>
                 <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.medium, color: ds.text.primary, marginBottom: 6 }}>I accept the Safe Harbour agreement</div>
                 <div style={{ maxHeight: 80, overflowY: "auto", fontSize: ds.size.xs, color: ds.text.muted, lineHeight: 1.6, paddingRight: 4 }}>
-                  This scanning activity is authorized under the program's safe harbour policy. By checking this box, you confirm that: (1) You are acting in good faith and within the defined scope of this bug bounty program; (2) You will not access, modify, or delete production data beyond what is necessary to demonstrate a vulnerability; (3) You will not perform Denial of Service (DoS) or Distributed DoS attacks; (4) You will report all findings responsibly through the official submission portal within the disclosure window; (5) You understand that unauthorized testing outside the defined scope may violate applicable computer crime laws including the CFAA, Computer Misuse Act, and equivalent local statutes.
+                  This scanning activity is authorized under the program&apos;s safe harbour policy. By checking this box, you confirm that: (1) You are acting in good faith and within the defined scope of this bug bounty program; (2) You will not access, modify, or delete production data beyond what is necessary to demonstrate a vulnerability; (3) You will not perform Denial of Service (DoS) or Distributed DoS attacks; (4) You will report all findings responsibly through the official submission portal within the disclosure window; (5) You understand that unauthorized testing outside the defined scope may violate applicable computer crime laws including the CFAA, Computer Misuse Act, and equivalent local statutes.
                 </div>
               </div>
             </div>
@@ -415,13 +492,20 @@ export function ComposeTab() {
           </div>
         </DSCard>
 
+        {launchError && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: ds.radius.md, backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40` }}>
+            <AlertCircle size={14} style={{ color: ds.severity.critical, flexShrink: 0 }} />
+            <span style={{ fontSize: ds.size.xs, color: ds.severity.critical }}>{launchError}</span>
+          </div>
+        )}
+
         <div style={{ position: "relative" }} onMouseEnter={() => !isValid && setTooltipOpen(true)} onMouseLeave={() => setTooltipOpen(false)}>
           {tooltipOpen && disabledReason && (
             <div style={{ position: "absolute", bottom: "110%", left: "50%", transform: "translateX(-50%)", marginBottom: 4, padding: "6px 12px", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.md, fontSize: ds.size.xs, color: ds.text.secondary, whiteSpace: "nowrap", zIndex: 100, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" }}>
               {disabledReason}
             </div>
           )}
-          <DSButton variant="primary" size="lg" icon={launching ? <Loader2 size={15} className="animate-spin" /> : undefined} onClick={handleLaunch} style={{ width: "100%", opacity: isValid ? 1 : 0.4, cursor: isValid ? "pointer" : "not-allowed" }}>
+          <DSButton variant="primary" size="lg" icon={launching ? <Loader2 size={15} className="animate-spin" /> : undefined} onClick={handleLaunch} style={{ width: "100%", opacity: isValid && !launching ? 1 : 0.4, cursor: isValid && !launching ? "pointer" : "not-allowed" }}>
             {launchSuccess ? "✓ Scan queued successfully" : launching ? "Queuing scan…" : "Launch Scan"}
           </DSButton>
         </div>
@@ -432,7 +516,11 @@ export function ComposeTab() {
           <DSCard style={{ padding: 24, textAlign: "center" }}>
             <Info size={28} style={{ color: ds.text.muted, margin: "0 auto 12px" }} />
             <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.medium, color: ds.text.secondary, marginBottom: 6 }}>No program selected</div>
-            <div style={{ fontSize: ds.size.xs, color: ds.text.muted, lineHeight: 1.6 }}>Select a program from the dropdown to see compliance info, scope enforcement and rules of engagement.</div>
+            <div style={{ fontSize: ds.size.xs, color: ds.text.muted, lineHeight: 1.6 }}>
+              {programs.length === 0
+                ? "No programs synced yet. Sync from the Programs page or scan a custom target."
+                : "Select a program from the dropdown to see compliance info, scope enforcement and rules of engagement."}
+            </div>
           </DSCard>
         ) : (
           <>
@@ -440,17 +528,8 @@ export function ComposeTab() {
               <PanelHeader label="Program Info" />
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.text.primary }}>{selectedProgram.name}</div>
-                <InfoRow label="Bounty range" value={`$${selectedProgram.bountyMin.toLocaleString()} – $${selectedProgram.bountyMax.toLocaleString()}`} />
-                <InfoRow label="Industry" value={selectedProgram.industry} />
-                <InfoRow
-                  label="Safe Harbour"
-                  value={
-                    <span style={{ display: "flex", alignItems: "center", gap: 4, color: selectedProgram.safeHarbour ? ds.accent.default : ds.severity.critical }}>
-                      {selectedProgram.safeHarbour ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
-                      {selectedProgram.safeHarbour ? "Protected" : "No coverage"}
-                    </span>
-                  }
-                />
+                <InfoRow label="Bounty range" value={selectedProgram.maxBounty ? `${selectedProgram.currency} ${(selectedProgram.minBounty ?? 0).toLocaleString()} – ${selectedProgram.maxBounty.toLocaleString()}` : "—"} />
+                <InfoRow label="Industry" value={selectedProgram.industry ?? "—"} />
                 <InfoRow
                   label="Automation"
                   value={
@@ -465,17 +544,21 @@ export function ComposeTab() {
 
             <DSCard style={{ padding: 16 }}>
               <PanelHeader label="Scope Enforcement" />
-              <div style={{ marginBottom: 8, fontSize: ds.size.xs, color: ds.text.muted }}>{selectedProgram.scope.length} entries authorized</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                {selectedProgram.scope.slice(0, 5).map((entry, i) => (
-                  <div key={i} style={{ fontSize: 11, fontFamily: "monospace", color: ds.text.secondary, padding: "4px 8px", backgroundColor: ds.bg.elevated, borderRadius: ds.radius.md, border: `1px solid ${ds.border.default}` }}>
-                    {entry}
-                  </div>
-                ))}
-                {selectedProgram.scope.length > 5 && (
-                  <div style={{ fontSize: ds.size.xs, color: ds.text.muted, paddingLeft: 4 }}>+{selectedProgram.scope.length - 5} more entries</div>
-                )}
-              </div>
+              <div style={{ marginBottom: 8, fontSize: ds.size.xs, color: ds.text.muted }}>{scopeUrls.length} entries authorized</div>
+              {scopeUrls.length === 0 ? (
+                <div style={{ fontSize: ds.size.xs, color: ds.text.muted, fontStyle: "italic" }}>No scope entries on this program</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {scopeUrls.slice(0, 5).map((entry, i) => (
+                    <div key={i} style={{ fontSize: 11, fontFamily: "monospace", color: ds.text.secondary, padding: "4px 8px", backgroundColor: ds.bg.elevated, borderRadius: ds.radius.md, border: `1px solid ${ds.border.default}` }}>
+                      {entry}
+                    </div>
+                  ))}
+                  {scopeUrls.length > 5 && (
+                    <div style={{ fontSize: ds.size.xs, color: ds.text.muted, paddingLeft: 4 }}>+{scopeUrls.length - 5} more entries</div>
+                  )}
+                </div>
+              )}
             </DSCard>
 
             <DSCard style={{ padding: 16 }}>
@@ -483,19 +566,18 @@ export function ComposeTab() {
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <div>
                   <div style={{ fontSize: 10, color: ds.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>User-Agent required</div>
-                  <div style={{ fontSize: 11, fontFamily: "monospace", color: ds.text.secondary, padding: "5px 8px", backgroundColor: ds.bg.elevated, borderRadius: ds.radius.md, border: `1px solid ${ds.border.default}` }}>{selectedProgram.userAgent}</div>
+                  <div style={{ fontSize: 11, fontFamily: "monospace", color: ds.text.secondary, padding: "5px 8px", backgroundColor: ds.bg.elevated, borderRadius: ds.radius.md, border: `1px solid ${ds.border.default}` }}>{programUserAgent(selectedProgram)}</div>
                 </div>
-                {selectedProgram.reqHeaders.length > 0 && (
+                {programRequiredHeaders(selectedProgram).length > 0 ? (
                   <div>
                     <div style={{ fontSize: 10, color: ds.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>Required headers</div>
-                    {selectedProgram.reqHeaders.map((h, i) => (
+                    {programRequiredHeaders(selectedProgram).map((h, i) => (
                       <div key={i} style={{ fontSize: 11, fontFamily: "monospace", color: ds.severity.info, padding: "4px 8px", backgroundColor: ds.bg.elevated, borderRadius: ds.radius.md, border: `1px solid ${ds.border.default}`, marginBottom: 4 }}>
                         {h}
                       </div>
                     ))}
                   </div>
-                )}
-                {selectedProgram.reqHeaders.length === 0 && (
+                ) : (
                   <div style={{ fontSize: ds.size.xs, color: ds.text.muted, fontStyle: "italic" }}>No additional headers required</div>
                 )}
               </div>
