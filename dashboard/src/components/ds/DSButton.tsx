@@ -15,6 +15,7 @@ interface DSButtonProps {
   children?: React.ReactNode;
   icon?: React.ReactNode;
   onClick?: () => void;
+  disabled?: boolean;
   style?: React.CSSProperties;
 }
 
@@ -29,13 +30,17 @@ export function DSButton({
   children,
   icon,
   onClick,
+  disabled: disabledProp,
   style: styleProp,
 }: DSButtonProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [isActive, setIsActive] = useState(false);
 
+  const effectiveForceState: ButtonState | undefined =
+    forceState ?? (disabledProp ? 'disabled' : undefined);
+
   const state: ButtonState =
-    forceState ?? (isActive ? 'active' : isHovered ? 'hover' : 'default');
+    effectiveForceState ?? (isActive ? 'active' : isHovered ? 'hover' : 'default');
 
   const disabled = state === 'disabled';
   const loading = state === 'loading';
@@ -115,15 +120,15 @@ export function DSButton({
       style={getStyle()}
       disabled={disabled || loading}
       onClick={onClick}
-      onMouseEnter={() => !forceState && setIsHovered(true)}
+      onMouseEnter={() => !effectiveForceState && setIsHovered(true)}
       onMouseLeave={() => {
-        if (!forceState) {
+        if (!effectiveForceState) {
           setIsHovered(false);
           setIsActive(false);
         }
       }}
-      onMouseDown={() => !forceState && setIsActive(true)}
-      onMouseUp={() => !forceState && setIsActive(false)}
+      onMouseDown={() => !effectiveForceState && setIsActive(true)}
+      onMouseUp={() => !effectiveForceState && setIsActive(false)}
     >
       {loading ? (
         <Loader2 size={iconSz[size]} className="animate-spin" />
