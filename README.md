@@ -1,16 +1,17 @@
 # Ethical Hacking Bot
 
-AI-powered bug bounty agent focused on logic vulnerabilities (IDOR, broken access control, information disclosure).
+Bug bounty scanner focused on logic vulnerabilities (IDOR, broken access control, information disclosure). Dashboard-driven, no AI in the scan path.
 
 ## Architecture
 
 ```
+dashboard/         # Next.js dashboard (UI + API + Prisma)
+scan_service.py    # FastAPI scanner microservice
 src/
-├── agent/        # AI agent core — decision engine, context understanding
 ├── recon/         # Target reconnaissance (subdomain enum, endpoint discovery)
-├── scanner/       # Vulnerability scanners (IDOR, access control, info disclosure)
-├── platforms/     # Bug bounty platform integrations (Intigriti, HackerOne, etc.)
-├── reporter/      # Automated report generation
+├── scanner/       # Vulnerability scanners (IDOR, access control, info disclosure, XSS, SQLi, CSRF, SSRF)
+├── scope/         # Scope enforcement
+├── reporter/      # Report generation
 └── utils/         # Shared utilities (HTTP client, auth, rate limiting)
 config/            # Platform configs, scan profiles
 tests/             # Test suite
@@ -42,13 +43,4 @@ cp config/config.example.yaml config/config.yaml
 
 ## Usage
 
-```bash
-# Run the agent on a specific target
-python -m src.agent.run --target <program-slug> --platform intigriti
-
-# Monitor new programs across all platforms
-python -m src.agent.monitor
-
-# Generate report for a finding
-python -m src.reporter.generate --finding <finding-id>
-```
+Scans are launched from the Next.js dashboard, which calls `scan_service.py` over HTTP. Run the dashboard and scanner with `docker compose up`.
