@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { verifyBearer } from "@/lib/auth";
 
 /**
  * Save/update scan checkpoint (called by Python scanner after each module).
@@ -10,10 +11,7 @@ import { prisma } from "@/lib/db";
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
-  const auth = req.headers.get("authorization") || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  const expectedToken = process.env.DASHBOARD_TOKEN || "";
-  if (!token || token !== expectedToken) {
+  if (!verifyBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

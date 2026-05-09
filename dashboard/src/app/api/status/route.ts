@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
+import { getDashboardToken } from "@/lib/auth";
 
 const scanServiceUrl = process.env.SCAN_SERVICE_URL || "http://localhost:8000";
 
 export async function GET() {
   try {
+    const token = getDashboardToken();
     const res = await fetch(`${scanServiceUrl}/api/status`, {
       cache: "no-store",
       signal: AbortSignal.timeout(5000),
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
       const data = await res.json();
