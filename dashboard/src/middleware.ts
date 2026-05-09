@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 
 const MIN_TOKEN_LENGTH = 16;
 
-const PUBLIC_API_PATHS = new Set<string>(["/api/auth"]);
+const PUBLIC_API_PATHS = new Set<string>([
+  "/api/auth",
+  "/api/auth/setup",
+  "/api/auth/status",
+]);
 
 const BOT_CALLBACK_PATTERNS: RegExp[] = [
   /^\/api\/scans\/[^/]+\/progress$/,

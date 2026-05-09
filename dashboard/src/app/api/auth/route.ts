@@ -1,15 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDashboardToken, constantTimeEquals, AuthConfigError } from "@/lib/auth";
+import {
+  verifyPassword,
+  isPasswordSetup,
+  getDashboardToken,
+  AuthConfigError,
+} from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
-  const { token } = await req.json();
-  if (!token) {
-    return NextResponse.json({ error: "Token required" }, { status: 400 });
+  const body = await req.json();
+  const password: string | undefined = body.password ?? body.token;
+
+  if (!password) {
+    return NextResponse.json({ error: "Password required" }, { status: 400 });
   }
 
-  let expectedToken: string;
+  if (!(await isPasswordSetup())) {
+    return NextResponse.json(
+      { error: "Password not set up yet", setupRequired: true },
+      { status: 412 }
+    );
+  }
+
+  let dashboardToken: string;
   try {
-    expectedToken = getDashboardToken();
+    dashboardToken = getDashboardToken();
   } catch (err) {
     if (err instanceof AuthConfigError) {
       return NextResponse.json(
@@ -20,9 +34,9 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  if (constantTimeEquals(token, expectedToken)) {
+  if (await verifyPassword(password)) {
     const response = NextResponse.json({ ok: true });
-    response.cookies.set("auth_token", token, {
+    response.cookies.set("auth_token", dashboardToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
@@ -32,5 +46,5 @@ export async function POST(req: NextRequest) {
     return response;
   }
 
-  return NextResponse.json({ error: "Invalid token" }, { status: 401 });
+  return NextResponse.json({ error: "Invalid password" }, { status: 401 });
 }
