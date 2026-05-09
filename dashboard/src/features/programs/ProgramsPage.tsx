@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { RefreshCw, Loader2, AlertCircle, X } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
@@ -19,6 +19,18 @@ const TABS: Array<{ id: Tab; label: string; badge?: string }> = [
   { id: "payouts", label: "Payouts" },
 ];
 
+function relativeTime(iso: string | null): string {
+  if (!iso) return "never";
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
 export function ProgramsPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -27,49 +39,67 @@ export function ProgramsPage() {
   const setTab = (t: Tab) => router.replace(`${pathname}?tab=${t}`, { scroll: false });
 
   const [syncing, setSyncing] = useState(false);
-  const [syncProgress, setSyncProgress] = useState(0);
-  const [lastSync, setLastSync] = useState("12 min ago");
-  const [apiErrorBanner, setApiErrorBanner] = useState(false);
+  const [lastSyncIso, setLastSyncIso] = useState<string | null>(null);
+  const [syncStats, setSyncStats] = useState<{ total: number; synced: number; compliant: number } | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [syncDone, setSyncDone] = useState(false);
 
-  const startSync = () => {
+  useEffect(() => {
+    let cancelled = false;
+    const loadLastSync = async () => {
+      try {
+        const res = await fetch("/api/programs?limit=1&sortBy=syncedAt&sortDir=desc", { credentials: "same-origin" });
+        if (!res.ok) return;
+        const json = await res.json();
+        const latest = json.programs?.[0];
+        if (latest?.syncedAt && !cancelled) setLastSyncIso(latest.syncedAt);
+      } catch {
+        // ignore
+      }
+    };
+    loadLastSync();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const startSync = async () => {
     if (syncing) return;
     setSyncing(true);
-    setSyncProgress(0);
+    setSyncError(null);
     setSyncDone(false);
-
-    let pct = 0;
-    const iv = setInterval(() => {
-      pct += Math.random() * 6 + 2;
-      if (pct >= 100) {
-        pct = 100;
-        clearInterval(iv);
-        setSyncing(false);
-        setSyncProgress(100);
-        setSyncDone(true);
-        setLastSync("just now");
-        setTimeout(() => setSyncDone(false), 3000);
+    try {
+      const res = await fetch("/api/programs/sync", { method: "POST", credentials: "same-origin" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
-      setSyncProgress(pct);
-    }, 100);
+      const json = await res.json();
+      setSyncStats({ total: json.total ?? 0, synced: json.synced ?? 0, compliant: json.compliant ?? 0 });
+      setLastSyncIso(new Date().toISOString());
+      setSyncDone(true);
+      setTimeout(() => setSyncDone(false), 3000);
+    } catch (e: any) {
+      setSyncError(e?.message ?? "Sync failed");
+    } finally {
+      setSyncing(false);
+    }
   };
-
-  const syncCount = Math.round(syncProgress * 1.2);
 
   return (
     <div>
-      {apiErrorBanner && (
+      {syncError && (
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 20, padding: "12px 16px", backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40`, borderRadius: ds.radius.lg }}>
           <AlertCircle size={15} style={{ color: ds.severity.critical, flexShrink: 0, marginTop: 1 }} />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.severity.critical, marginBottom: 3 }}>Intigriti sync failed</div>
-            <div style={{ fontSize: ds.size.xs, color: ds.text.muted }}>Could not reach api.intigriti.com. Check your API token in Settings or try again.</div>
+            <div style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{syncError}</div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
             <DSButton variant="secondary" size="sm" icon={<RefreshCw size={11} />} onClick={startSync}>
               Retry
             </DSButton>
-            <button onClick={() => setApiErrorBanner(false)} style={{ background: "none", border: "none", cursor: "pointer", color: ds.text.muted, padding: 2 }}>
+            <button onClick={() => setSyncError(null)} style={{ background: "none", border: "none", cursor: "pointer", color: ds.text.muted, padding: 2 }}>
               <X size={13} />
             </button>
           </div>
@@ -79,13 +109,15 @@ export function ProgramsPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
         <h1 style={{ margin: 0, fontSize: ds.size["3xl"], fontWeight: ds.weight.bold, color: ds.text.primary, lineHeight: 1.2 }}>Programs</h1>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{syncDone ? <span style={{ color: ds.accent.default }}>✓ Synced just now</span> : `Last sync: ${lastSync}`}</span>
+          <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>
+            {syncDone && syncStats ? (
+              <span style={{ color: ds.accent.default }}>✓ Synced {syncStats.synced} programs</span>
+            ) : (
+              `Last sync: ${relativeTime(lastSyncIso)}`
+            )}
+          </span>
 
-          <button onClick={() => setApiErrorBanner(!apiErrorBanner)} style={{ height: 28, padding: "0 10px", borderRadius: ds.radius.md, cursor: "pointer", border: `1px solid ${ds.border.default}`, backgroundColor: "transparent", color: ds.text.muted, fontSize: ds.size.xs, fontFamily: "Inter, sans-serif" }}>
-            {apiErrorBanner ? "Hide error" : "Simulate error"}
-          </button>
-
-          <DSButton variant="primary" size="md" icon={syncing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} onClick={startSync}>
+          <DSButton variant="primary" size="md" icon={syncing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} onClick={startSync} disabled={syncing}>
             {syncing ? "Syncing…" : "Sync Intigriti"}
           </DSButton>
         </div>
@@ -93,15 +125,9 @@ export function ProgramsPage() {
 
       {syncing && (
         <div style={{ marginBottom: 16, padding: "12px 16px", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Loader2 size={12} className="animate-spin" style={{ color: ds.accent.default }} />
-              <span style={{ fontSize: ds.size.sm, color: ds.text.primary }}>Syncing programs with Intigriti…</span>
-            </div>
-            <span style={{ fontSize: ds.size.xs, color: ds.accent.default, fontWeight: ds.weight.semibold, fontVariantNumeric: "tabular-nums" }}>{Math.min(syncCount, 120)} / 120</span>
-          </div>
-          <div style={{ height: 4, backgroundColor: ds.bg.base, borderRadius: 2, overflow: "hidden" }}>
-            <div style={{ width: `${syncProgress}%`, height: "100%", backgroundColor: ds.accent.default, borderRadius: 2, transition: "width 0.12s linear" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Loader2 size={12} className="animate-spin" style={{ color: ds.accent.default }} />
+            <span style={{ fontSize: ds.size.sm, color: ds.text.primary }}>Syncing programs with Intigriti — this may take a minute…</span>
           </div>
         </div>
       )}

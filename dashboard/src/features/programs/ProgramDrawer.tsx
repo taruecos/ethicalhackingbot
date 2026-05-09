@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import { X, ExternalLink, ScanLine, ShieldOff, CheckCircle2, XCircle, ChevronDown, ChevronUp } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
-import type { Program, ScopeEntry } from "./mockData";
+import type { Program, ScopeEntry } from "./types";
 import { COMPLIANCE_CFG } from "./ProgramCard";
 
 interface ProgramDrawerProps {

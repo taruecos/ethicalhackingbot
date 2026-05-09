@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Copy, Check, Trash2, Plus, Key, ExternalLink } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
@@ -21,12 +21,6 @@ interface ApiToken {
   prefix: string;
 }
 
-const MOCK_TOKENS: ApiToken[] = [
-  { id: "t1", name: "CI/CD Pipeline", created: "2026-03-15", lastUsed: "2026-04-23", scopes: ["read:findings", "read:scans"], prefix: "ehb_live_a3Kx" },
-  { id: "t2", name: "Zapier Integration", created: "2026-02-01", lastUsed: "2026-04-22", scopes: ["read:findings"], prefix: "ehb_live_9pQz" },
-  { id: "t3", name: "Dev Testing", created: "2026-04-10", lastUsed: null, scopes: ["*"], prefix: "ehb_test_7mRj" },
-];
-
 const ALL_SCOPES = [
   { key: "read:findings", label: "Read findings", hint: "List and read finding details" },
   { key: "write:findings", label: "Write findings", hint: "Create, update and delete findings" },
@@ -36,10 +30,14 @@ const ALL_SCOPES = [
   { key: "*", label: "Full access", hint: "All permissions — use with caution" },
 ];
 
-const WEBHOOK_URL = "https://scanner.ehbsec.io/webhook/inbound/v1/7f4a9c2e1b3d8e6f";
-
 export function ApiTab({ onSave, onError }: ApiTabProps) {
-  const [tokens, setTokens] = useState<ApiToken[]>(MOCK_TOKENS);
+  const [tokens, setTokens] = useState<ApiToken[]>([]);
+  const [webhookUrl, setWebhookUrl] = useState("");
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setWebhookUrl(`${window.location.origin}/api/findings`);
+    }
+  }, []);
   const [webhookCopied, setWCopied] = useState(false);
   const [revokeTarget, setRevoke] = useState<ApiToken | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -50,7 +48,7 @@ export function ApiTab({ onSave, onError }: ApiTabProps) {
   const [tokenCopied, setTCopied] = useState(false);
 
   const copyWebhook = () => {
-    navigator.clipboard.writeText(WEBHOOK_URL);
+    navigator.clipboard.writeText(webhookUrl);
     setWCopied(true);
     setTimeout(() => setWCopied(false), 1500);
   };
@@ -106,7 +104,7 @@ export function ApiTab({ onSave, onError }: ApiTabProps) {
       <SettingsCard title="Inbound webhook endpoint" description="Send findings or scan triggers to this URL from external tools">
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <FormInput
-            value={WEBHOOK_URL}
+            value={webhookUrl}
             readOnly
             monospace
             rightElement={

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -31,79 +31,47 @@ import { DSCard } from "@/components/ds/DSCard";
 import { DSButton } from "@/components/ds/DSButton";
 import { DSEmptyState } from "@/components/ds/DSEmptyState";
 
-type PageState = "default" | "loading" | "empty" | "error";
 type ActiveTab = "today" | "historical";
 type TimeRange = "7d" | "30d" | "90d" | "all";
 
-const RECENT_SCANS = [
-  { id: 1, target: "api.hackerone.com", status: "COMPLETED", duration: "2m 34s", findings: 3 },
-  { id: 2, target: "app.bugcrowd.com", status: "RUNNING", duration: "1m 12s", findings: 1 },
-  { id: 3, target: "admin.synack.com", status: "COMPLETED", duration: "4m 01s", findings: 0 },
-  { id: 4, target: "api.intigriti.com", status: "COMPLETED", duration: "3m 22s", findings: 5 },
-  { id: 5, target: "auth.yeswehack.com", status: "FAILED", duration: "0m 45s", findings: 0 },
-  { id: 6, target: "shop.hackerone.com", status: "COMPLETED", duration: "5m 10s", findings: 2 },
-  { id: 7, target: "cdn.bugcrowd.com", status: "QUEUED", duration: "—", findings: 0 },
-  { id: 8, target: "portal.intigriti.com", status: "RUNNING", duration: "0m 58s", findings: 1 },
-  { id: 9, target: "api.bugbounty.jp", status: "COMPLETED", duration: "3m 47s", findings: 4 },
-  { id: 10, target: "app.zerocopter.com", status: "COMPLETED", duration: "2m 19s", findings: 2 },
-];
+type SeverityKey = "critical" | "high" | "medium" | "low" | "info";
 
-const SEVERITY_DIST = [
-  { key: "critical", label: "Critical", count: 4, color: ds.severity.critical, bg: ds.severity.criticalBg },
-  { key: "high", label: "High", count: 12, color: ds.severity.high, bg: ds.severity.highBg },
-  { key: "medium", label: "Medium", count: 23, color: ds.severity.medium, bg: ds.severity.mediumBg },
-  { key: "low", label: "Low", count: 28, color: ds.severity.low, bg: ds.severity.lowBg },
-  { key: "info", label: "Info", count: 7, color: ds.severity.info, bg: ds.severity.infoBg },
-];
-const SEVERITY_TOTAL = SEVERITY_DIST.reduce((a, b) => a + b.count, 0);
+interface RecentScan {
+  id: string;
+  target: string;
+  status: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  stats: any;
+}
 
-const TODAY_FINDINGS = { critical: 4, high: 7, medium: 4, low: 2, info: 1 };
+interface OverviewData {
+  totalScans: number;
+  activeScans: number;
+  totalFindings: number;
+  criticalFindings: number;
+  recentScans: RecentScan[];
+  severityBreakdown: Record<SeverityKey, number>;
+}
 
-const SCANS_PER_MONTH = [
-  { month: "Nov", scans: 142 },
-  { month: "Dec", scans: 178 },
-  { month: "Jan", scans: 203 },
-  { month: "Feb", scans: 189 },
-  { month: "Mar", scans: 234 },
-  { month: "Apr", scans: 267 },
-];
-
-const REVENUE_PER_MONTH = [
-  { month: "Nov", revenue: 2100 },
-  { month: "Dec", revenue: 3200 },
-  { month: "Jan", revenue: 1800 },
-  { month: "Feb", revenue: 4500 },
-  { month: "Mar", revenue: 5800 },
-  { month: "Apr", revenue: 8450 },
-];
-
-const TOP_MODULES = [
-  { module: "SQLi Scanner", findings: 234 },
-  { module: "XSS Detector", findings: 198 },
-  { module: "Auth Bypass", findings: 156 },
-  { module: "SSRF Probe", findings: 143 },
-  { module: "RCE Check", findings: 89 },
-  { module: "Path Traversal", findings: 67 },
-  { module: "XXE Parser", findings: 54 },
-  { module: "CSRF Validator", findings: 43 },
-  { module: "Open Redirect", findings: 38 },
-  { module: "Info Disclosure", findings: 29 },
-];
-
-const PLATFORM_PERF = [
-  { platform: "HackerOne", scans: 78, findings: 234, reported: 45, accepted: 31, bounty: "€3,200" },
-  { platform: "Bugcrowd", scans: 54, findings: 178, reported: 32, accepted: 22, bounty: "€2,100" },
-  { platform: "Intigriti", scans: 43, findings: 143, reported: 28, accepted: 19, bounty: "€1,850" },
-  { platform: "YesWeHack", scans: 31, findings: 89, reported: 18, accepted: 12, bounty: "€980" },
-  { platform: "Synack", scans: 12, findings: 45, reported: 8, accepted: 6, bounty: "€320" },
-];
-
-const HISTORICAL_BY_RANGE: Record<TimeRange, { bounties: number; revenue: string; targets: number; successRate: number }> = {
-  "7d": { bounties: 6, revenue: "€1,840", targets: 38, successRate: 71 },
-  "30d": { bounties: 24, revenue: "€8,450", targets: 156, successRate: 67 },
-  "90d": { bounties: 68, revenue: "€24,200", targets: 421, successRate: 64 },
-  all: { bounties: 142, revenue: "€58,900", targets: 892, successRate: 62 },
-};
+interface AnalyticsData {
+  totalBounties: number;
+  totalRevenue: number;
+  acceptanceRate: number;
+  totalTargets: number;
+  scanSuccessRate: number;
+  scansByMonth: { month: string; count: number }[];
+  revenueByMonth: { month: string; amount: number }[];
+  topModules: { module: string; findings: number }[];
+  platformStats: {
+    platform: string;
+    scans: number;
+    findings: number;
+    reported: number;
+    accepted: number;
+    bounty: number;
+  }[];
+}
 
 function Skeleton({ width = "100%", height = 16, radius = ds.radius.md }: { width?: string | number; height?: number; radius?: number }) {
   return <div className="animate-pulse" style={{ width, height, borderRadius: radius, backgroundColor: ds.bg.elevated }} />;
@@ -142,23 +110,32 @@ function CardSkeleton({ height = 240 }: { height?: number }) {
   );
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  COMPLETE: "COMPLETED",
+  RUNNING: "RUNNING",
+  ERROR: "FAILED",
+  CANCELLED: "FAILED",
+  QUEUED: "QUEUED",
+};
+
 function ScanStatusBadge({ status }: { status: string }) {
+  const display = STATUS_LABEL[status] ?? status;
   const configs: Record<string, { color: string; bg: string }> = {
     COMPLETED: { color: ds.accent.default, bg: ds.accent.bg15 },
     RUNNING: { color: ds.severity.info, bg: ds.severity.infoBg },
     FAILED: { color: ds.severity.critical, bg: ds.severity.criticalBg },
     QUEUED: { color: ds.text.muted, bg: "rgba(113,113,122,0.12)" },
   };
-  const cfg = configs[status] ?? { color: ds.text.muted, bg: "rgba(113,113,122,0.12)" };
+  const cfg = configs[display] ?? { color: ds.text.muted, bg: "rgba(113,113,122,0.12)" };
 
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 5, height: 20, padding: "0 8px", borderRadius: ds.radius.md, backgroundColor: cfg.bg, color: cfg.color, fontSize: ds.size.xs, fontWeight: ds.weight.medium, whiteSpace: "nowrap" }}>
-      {status === "RUNNING" ? (
+      {display === "RUNNING" ? (
         <Loader2 size={9} className="animate-spin" style={{ color: cfg.color }} />
       ) : (
         <span style={{ width: 5, height: 5, borderRadius: "50%", backgroundColor: cfg.color }} />
       )}
-      {status.charAt(0) + status.slice(1).toLowerCase()}
+      {display.charAt(0) + display.slice(1).toLowerCase()}
     </span>
   );
 }
@@ -219,8 +196,23 @@ function ChartTooltip({ active, payload, label, prefix = "", suffix = "" }: any)
   );
 }
 
-function TodayContent({ botOnline, pageState }: { botOnline: boolean; pageState: PageState }) {
-  if (pageState === "loading") {
+function formatDuration(startedAt: string | null, finishedAt: string | null): string {
+  if (!startedAt) return "—";
+  const start = new Date(startedAt).getTime();
+  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+function getFindingsCount(stats: any): number {
+  if (!stats || typeof stats !== "object") return 0;
+  return Number(stats.findings || stats.findingsCount || 0) || 0;
+}
+
+function TodayContent({ data, loading, error, onRetry }: { data: OverviewData | null; loading: boolean; error: string | null; onRetry: () => void }) {
+  if (loading) {
     return (
       <div>
         <div className="animate-pulse" style={{ height: 48, borderRadius: ds.radius.lg, backgroundColor: ds.bg.elevated, marginBottom: 24 }} />
@@ -235,160 +227,143 @@ function TodayContent({ botOnline, pageState }: { botOnline: boolean; pageState:
     );
   }
 
-  if (pageState === "empty") {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 480 }}>
-        <DSEmptyState icon={ScanLine} title="No scans yet" description="You haven't run any scans today. Launch your first scan to start discovering vulnerabilities across your programs." ctaLabel="Run your first scan" onCta={() => {}} />
-      </div>
-    );
-  }
-
-  if (pageState === "error") {
+  if (error) {
     return (
       <div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderRadius: ds.radius.lg, backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40`, marginBottom: 24 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <WifiOff size={16} style={{ color: ds.severity.critical, flexShrink: 0 }} />
             <div>
-              <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.severity.critical }}>Bot unreachable — scanner offline</div>
-              <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>Last successful connection 47 minutes ago. Check your VPN or server status.</div>
+              <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.severity.critical }}>Failed to load dashboard data</div>
+              <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>{error}</div>
             </div>
           </div>
-          <DSButton variant="danger" size="sm" icon={<RotateCcw size={12} />}>Retry</DSButton>
-        </div>
-
-        <div style={{ opacity: 0.35, pointerEvents: "none" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
-            <StatCardSkeleton />
-            <StatCardSkeleton />
-            <StatCardSkeleton />
-            <StatCardSkeleton />
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <CardSkeleton height={280} />
-            <CardSkeleton height={280} />
-          </div>
+          <DSButton variant="danger" size="sm" icon={<RotateCcw size={12} />} onClick={onRetry}>Retry</DSButton>
         </div>
       </div>
     );
   }
 
+  if (!data || data.totalScans === 0) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 480 }}>
+        <DSEmptyState
+          icon={ScanLine}
+          title="No scans yet"
+          description="Run your first scan to start discovering vulnerabilities across your programs."
+          ctaLabel="Run your first scan"
+          onCta={() => { window.location.href = "/scans"; }}
+        />
+      </div>
+    );
+  }
+
+  const severityEntries: { key: SeverityKey; label: string; count: number; color: string; bg: string }[] = [
+    { key: "critical", label: "Critical", count: data.severityBreakdown.critical, color: ds.severity.critical, bg: ds.severity.criticalBg },
+    { key: "high", label: "High", count: data.severityBreakdown.high, color: ds.severity.high, bg: ds.severity.highBg },
+    { key: "medium", label: "Medium", count: data.severityBreakdown.medium, color: ds.severity.medium, bg: ds.severity.mediumBg },
+    { key: "low", label: "Low", count: data.severityBreakdown.low, color: ds.severity.low, bg: ds.severity.lowBg },
+    { key: "info", label: "Info", count: data.severityBreakdown.info, color: ds.severity.info, bg: ds.severity.infoBg },
+  ];
+  const severityTotal = severityEntries.reduce((a, b) => a + b.count, 0);
+
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: ds.radius.lg, backgroundColor: botOnline ? ds.accent.bg15 : ds.severity.criticalBg, border: `1px solid ${botOnline ? ds.accent.bg20 : ds.severity.critical + "40"}`, marginBottom: 24 }}>
-        {botOnline ? <CheckCircle2 size={14} style={{ color: ds.accent.default, flexShrink: 0 }} /> : <WifiOff size={14} style={{ color: ds.severity.critical, flexShrink: 0 }} />}
-        <span style={{ fontSize: ds.size.sm, fontWeight: ds.weight.medium, color: botOnline ? ds.accent.default : ds.severity.critical }}>
-          {botOnline ? "Bot online — last scan 14 min ago" : "Bot offline — scanner unreachable"}
-        </span>
-        <span style={{ marginLeft: "auto", fontSize: ds.size.xs, color: ds.text.muted }}>
-          {botOnline ? "Auto-refresh in 5m" : "Last online 47m ago"}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: ds.radius.lg, backgroundColor: ds.accent.bg15, border: `1px solid ${ds.accent.bg20}`, marginBottom: 24 }}>
+        <CheckCircle2 size={14} style={{ color: ds.accent.default, flexShrink: 0 }} />
+        <span style={{ fontSize: ds.size.sm, fontWeight: ds.weight.medium, color: ds.accent.default }}>
+          {data.activeScans > 0 ? `${data.activeScans} scan${data.activeScans > 1 ? "s" : ""} active` : "No active scans"}
         </span>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
-        <StatCard label="Total Scans Today" value={47} delta="+12 vs yesterday" deltaPositive={true} icon={<ScanLine size={14} style={{ color: ds.text.muted }} />} />
-        <StatCard label="Active Scans" value={3} delta="3 in progress" icon={<Loader2 size={14} style={{ color: ds.text.muted }} />} spinning={true} />
-        <StatCard
-          label="New Findings"
-          value={18}
-          delta="across 12 targets"
-          icon={<Bug size={14} style={{ color: ds.text.muted }} />}
-          footer={
-            <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-              {(Object.entries(TODAY_FINDINGS) as Array<[keyof typeof TODAY_FINDINGS, number]>).map(([sev, count]) => (
-                <span
-                  key={sev}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 3,
-                    padding: "1px 6px",
-                    borderRadius: ds.radius.md,
-                    backgroundColor: ds.severity[`${sev}Bg` as keyof typeof ds.severity] as string,
-                    fontSize: 10,
-                    fontWeight: ds.weight.medium,
-                    color: ds.severity[sev as keyof typeof ds.severity] as string,
-                  }}
-                >
-                  <span style={{ width: 4, height: 4, borderRadius: "50%", backgroundColor: ds.severity[sev as keyof typeof ds.severity] as string }} />
-                  {count}
-                </span>
-              ))}
-            </div>
-          }
-        />
-        <StatCard label="Critical Findings" value={4} delta="+2 since 08:00" deltaPositive={false} icon={<AlertTriangle size={14} style={{ color: ds.severity.critical }} />} valueColor={ds.severity.critical} />
+        <StatCard label="Total Scans" value={data.totalScans} icon={<ScanLine size={14} style={{ color: ds.text.muted }} />} />
+        <StatCard label="Active Scans" value={data.activeScans} delta={data.activeScans > 0 ? "in progress" : "idle"} icon={<Loader2 size={14} style={{ color: ds.text.muted }} />} spinning={data.activeScans > 0} />
+        <StatCard label="Total Findings" value={data.totalFindings} icon={<Bug size={14} style={{ color: ds.text.muted }} />} />
+        <StatCard label="Critical Findings" value={data.criticalFindings} icon={<AlertTriangle size={14} style={{ color: ds.severity.critical }} />} valueColor={data.criticalFindings > 0 ? ds.severity.critical : undefined} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <DSCard style={{ padding: 20 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
             <span style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.text.primary }}>Severity Distribution</span>
-            <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{SEVERITY_TOTAL} findings</span>
+            <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{severityTotal} findings</span>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {SEVERITY_DIST.map(({ key, label, count, color }) => {
-              const pct = Math.round((count / SEVERITY_TOTAL) * 100);
-              return (
-                <div key={key} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ width: 60, flexShrink: 0 }}>
-                    <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.medium, color }}>{label}</span>
-                  </div>
-                  <div style={{ flex: 1, height: 8, borderRadius: 4, backgroundColor: ds.bg.elevated, overflow: "hidden" }}>
-                    <div style={{ width: `${pct}%`, height: "100%", borderRadius: 4, backgroundColor: color, transition: "width 0.6s ease" }} />
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, width: 64, justifyContent: "flex-end" }}>
-                    <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: ds.text.primary, fontVariantNumeric: "tabular-nums" }}>{count}</span>
-                    <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{pct}%</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          {severityTotal === 0 ? (
+            <div style={{ padding: "30px 0", textAlign: "center", color: ds.text.muted, fontSize: ds.size.sm }}>No findings yet</div>
+          ) : (
+            <>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {severityEntries.map(({ key, label, count, color }) => {
+                  const pct = severityTotal > 0 ? Math.round((count / severityTotal) * 100) : 0;
+                  return (
+                    <div key={key} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ width: 60, flexShrink: 0 }}>
+                        <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.medium, color }}>{label}</span>
+                      </div>
+                      <div style={{ flex: 1, height: 8, borderRadius: 4, backgroundColor: ds.bg.elevated, overflow: "hidden" }}>
+                        <div style={{ width: `${pct}%`, height: "100%", borderRadius: 4, backgroundColor: color, transition: "width 0.6s ease" }} />
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, width: 64, justifyContent: "flex-end" }}>
+                        <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: ds.text.primary, fontVariantNumeric: "tabular-nums" }}>{count}</span>
+                        <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{pct}%</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
 
-          <div style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", marginTop: 20 }}>
-            {SEVERITY_DIST.map(({ key, count, color }) => (
-              <div key={key} style={{ flex: count, backgroundColor: color }} />
-            ))}
-          </div>
+              <div style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", marginTop: 20 }}>
+                {severityEntries.map(({ key, count, color }) => (
+                  count > 0 ? <div key={key} style={{ flex: count, backgroundColor: color }} /> : null
+                ))}
+              </div>
+            </>
+          )}
         </DSCard>
 
         <DSCard style={{ padding: 20 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <span style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.text.primary }}>Recent Scans</span>
-            <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>Last 10</span>
+            <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>Last {data.recentScans.length}</span>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 70px 50px", gap: 8, padding: "0 0 8px", borderBottom: `1px solid ${ds.border.default}`, marginBottom: 8 }}>
-            {["Target", "Status", "Duration", "Finds"].map((h) => (
-              <span key={h} style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</span>
-            ))}
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {RECENT_SCANS.map((scan) => (
-              <div key={scan.id} style={{ display: "grid", gridTemplateColumns: "1fr 90px 70px 50px", gap: 8, padding: "7px 0", borderRadius: ds.radius.md, alignItems: "center", borderBottom: `1px solid ${ds.border.default}` }}>
-                <span style={{ fontSize: ds.size.xs, color: ds.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>{scan.target}</span>
-                <ScanStatusBadge status={scan.status} />
-                <span style={{ fontSize: ds.size.xs, color: ds.text.muted, fontVariantNumeric: "tabular-nums" }}>{scan.duration}</span>
-                <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: scan.findings > 0 ? ds.severity.high : ds.text.muted, fontVariantNumeric: "tabular-nums" }}>
-                  {scan.findings > 0 ? scan.findings : "—"}
-                </span>
+          {data.recentScans.length === 0 ? (
+            <div style={{ padding: "30px 0", textAlign: "center", color: ds.text.muted, fontSize: ds.size.sm }}>No scans yet</div>
+          ) : (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 70px 50px", gap: 8, padding: "0 0 8px", borderBottom: `1px solid ${ds.border.default}`, marginBottom: 8 }}>
+                {["Target", "Status", "Duration", "Finds"].map((h) => (
+                  <span key={h} style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</span>
+                ))}
               </div>
-            ))}
-          </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {data.recentScans.map((scan) => {
+                  const findings = getFindingsCount(scan.stats);
+                  return (
+                    <div key={scan.id} style={{ display: "grid", gridTemplateColumns: "1fr 90px 70px 50px", gap: 8, padding: "7px 0", borderRadius: ds.radius.md, alignItems: "center", borderBottom: `1px solid ${ds.border.default}` }}>
+                      <span style={{ fontSize: ds.size.xs, color: ds.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>{scan.target}</span>
+                      <ScanStatusBadge status={scan.status} />
+                      <span style={{ fontSize: ds.size.xs, color: ds.text.muted, fontVariantNumeric: "tabular-nums" }}>{formatDuration(scan.startedAt, scan.finishedAt)}</span>
+                      <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: findings > 0 ? ds.severity.high : ds.text.muted, fontVariantNumeric: "tabular-nums" }}>
+                        {findings > 0 ? findings : "—"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </DSCard>
       </div>
     </div>
   );
 }
 
-function HistoricalContent({ timeRange, setTimeRange, pageState }: { timeRange: TimeRange; setTimeRange: (r: TimeRange) => void; pageState: PageState }) {
-  const stats = HISTORICAL_BY_RANGE[timeRange];
-  const maxModule = TOP_MODULES[0].findings;
-
-  if (pageState === "loading") {
+function HistoricalContent({ timeRange, setTimeRange, data, loading, error, onRetry }: { timeRange: TimeRange; setTimeRange: (r: TimeRange) => void; data: AnalyticsData | null; loading: boolean; error: string | null; onRetry: () => void }) {
+  if (loading) {
     return (
       <div>
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 20 }}>
@@ -407,89 +382,118 @@ function HistoricalContent({ timeRange, setTimeRange, pageState }: { timeRange: 
     );
   }
 
-  if (pageState === "empty") {
+  if (error) {
     return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 480 }}>
-        <DSEmptyState icon={Trophy} title="No historical data yet" description="Once you complete your first scan and report findings, your historical analytics will appear here." ctaLabel="Start scanning" onCta={() => {}} />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderRadius: ds.radius.lg, backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <WifiOff size={16} style={{ color: ds.severity.critical, flexShrink: 0 }} />
+          <div>
+            <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.severity.critical }}>Failed to load analytics</div>
+            <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>{error}</div>
+          </div>
+        </div>
+        <DSButton variant="danger" size="sm" icon={<RotateCcw size={12} />} onClick={onRetry}>Retry</DSButton>
       </div>
     );
   }
 
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 20 }}>
-        <div style={{ display: "flex", gap: 4, padding: 4, backgroundColor: ds.bg.elevated, borderRadius: ds.radius.lg, border: `1px solid ${ds.border.default}` }}>
-          {(["7d", "30d", "90d", "all"] as TimeRange[]).map((range) => (
-            <button
-              key={range}
-              onClick={() => setTimeRange(range)}
-              style={{ height: 28, padding: "0 14px", borderRadius: ds.radius.md, border: "none", backgroundColor: timeRange === range ? ds.accent.default : "transparent", color: timeRange === range ? "#000" : ds.text.muted, fontSize: ds.size.xs, fontWeight: timeRange === range ? ds.weight.semibold : ds.weight.medium, cursor: "pointer", transition: "all 0.15s ease", fontFamily: "Inter, sans-serif" }}
-            >
-              {range === "all" ? "All" : range}
-            </button>
-          ))}
+  const hasData = data && (data.totalBounties > 0 || data.totalTargets > 0 || data.scansByMonth.length > 0);
+
+  if (!hasData) {
+    return (
+      <div>
+        <TimeRangePicker timeRange={timeRange} setTimeRange={setTimeRange} />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 420 }}>
+          <DSEmptyState
+            icon={Trophy}
+            title="No historical data yet"
+            description="Once you complete your first scan and report findings, your historical analytics will appear here."
+            ctaLabel="Start scanning"
+            onCta={() => { window.location.href = "/scans"; }}
+          />
         </div>
       </div>
+    );
+  }
+
+  const maxModule = data!.topModules.length > 0 ? data!.topModules[0].findings : 1;
+  const formatEur = (v: number) => `€${v.toLocaleString()}`;
+
+  return (
+    <div>
+      <TimeRangePicker timeRange={timeRange} setTimeRange={setTimeRange} />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
-        <StatCard label="Total Bounties" value={stats.bounties} delta="reports accepted" icon={<Trophy size={14} style={{ color: ds.severity.high }} />} />
-        <StatCard label="Revenue" value={stats.revenue} delta="EUR total" deltaPositive={true} icon={<Euro size={14} style={{ color: ds.accent.default }} />} valueColor={ds.accent.default} />
-        <StatCard label="Targets Scanned" value={stats.targets} delta="unique hosts" icon={<Target size={14} style={{ color: ds.severity.info }} />} />
-        <StatCard label="Success Rate" value={`${stats.successRate}%`} delta="findings → accepted" icon={<Percent size={14} style={{ color: ds.severity.medium }} />} />
+        <StatCard label="Total Bounties" value={data!.totalBounties} delta="reports accepted" icon={<Trophy size={14} style={{ color: ds.severity.high }} />} />
+        <StatCard label="Revenue" value={formatEur(data!.totalRevenue)} delta="EUR total" deltaPositive={true} icon={<Euro size={14} style={{ color: ds.accent.default }} />} valueColor={ds.accent.default} />
+        <StatCard label="Targets Scanned" value={data!.totalTargets} delta="unique hosts" icon={<Target size={14} style={{ color: ds.severity.info }} />} />
+        <StatCard label="Success Rate" value={`${data!.scanSuccessRate}%`} delta="findings → accepted" icon={<Percent size={14} style={{ color: ds.severity.medium }} />} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <DSCard style={{ padding: 20 }}>
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.text.primary }}>Scans per Month</div>
-            <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>Last 6 months</div>
+            <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>Last 12 months</div>
           </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={SCANS_PER_MONTH} barSize={24} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(39,39,42,0.35)" vertical={false} />
-              <XAxis dataKey="month" tick={{ fill: ds.text.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: ds.text.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<ChartTooltip suffix=" scans" />} cursor={{ fill: "rgba(39,39,42,0.25)" }} />
-              <Bar dataKey="scans" fill={ds.accent.default} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          {data!.scansByMonth.length === 0 ? (
+            <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: ds.text.muted, fontSize: ds.size.sm }}>No data</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={data!.scansByMonth} barSize={24} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(39,39,42,0.35)" vertical={false} />
+                <XAxis dataKey="month" tick={{ fill: ds.text.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: ds.text.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
+                <Tooltip content={<ChartTooltip suffix=" scans" />} cursor={{ fill: "rgba(39,39,42,0.25)" }} />
+                <Bar dataKey="count" fill={ds.accent.default} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </DSCard>
 
         <DSCard style={{ padding: 20 }}>
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.text.primary }}>Revenue per Month</div>
-            <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>EUR · Last 6 months</div>
+            <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>EUR · Last 12 months</div>
           </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={REVENUE_PER_MONTH} barSize={24} margin={{ top: 0, right: 0, left: -10, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(39,39,42,0.35)" vertical={false} />
-              <XAxis dataKey="month" tick={{ fill: ds.text.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tickFormatter={(v) => `€${(v / 1000).toFixed(0)}k`} tick={{ fill: ds.text.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<ChartTooltip prefix="€" />} cursor={{ fill: "rgba(39,39,42,0.25)" }} />
-              <Bar dataKey="revenue" fill={ds.severity.medium} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          {data!.revenueByMonth.length === 0 ? (
+            <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: ds.text.muted, fontSize: ds.size.sm }}>No data</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={data!.revenueByMonth} barSize={24} margin={{ top: 0, right: 0, left: -10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(39,39,42,0.35)" vertical={false} />
+                <XAxis dataKey="month" tick={{ fill: ds.text.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis tickFormatter={(v) => `€${(v / 1000).toFixed(0)}k`} tick={{ fill: ds.text.muted, fontSize: 11 }} axisLine={false} tickLine={false} />
+                <Tooltip content={<ChartTooltip prefix="€" />} cursor={{ fill: "rgba(39,39,42,0.25)" }} />
+                <Bar dataKey="amount" fill={ds.severity.medium} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </DSCard>
 
         <DSCard style={{ padding: 20 }}>
           <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.text.primary }}>Top 10 Modules by Findings</div>
-            <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>All time</div>
+            <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.text.primary }}>Top Modules by Findings</div>
+            <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>{timeRange === "all" ? "All time" : `Last ${timeRange}`}</div>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {TOP_MODULES.map(({ module, findings }, idx) => (
-              <div key={module} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: ds.size.xs, color: ds.text.muted, width: 16, textAlign: "right", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{idx + 1}</span>
-                <div style={{ width: 96, flexShrink: 0 }}>
-                  <span style={{ fontSize: ds.size.xs, color: ds.text.secondary }}>{module}</span>
+          {data!.topModules.length === 0 ? (
+            <div style={{ padding: "30px 0", textAlign: "center", color: ds.text.muted, fontSize: ds.size.sm }}>No findings yet</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {data!.topModules.map(({ module, findings }, idx) => (
+                <div key={module} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: ds.size.xs, color: ds.text.muted, width: 16, textAlign: "right", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{idx + 1}</span>
+                  <div style={{ width: 96, flexShrink: 0 }}>
+                    <span style={{ fontSize: ds.size.xs, color: ds.text.secondary }}>{module}</span>
+                  </div>
+                  <div style={{ flex: 1, height: 6, borderRadius: 3, backgroundColor: ds.bg.elevated, overflow: "hidden" }}>
+                    <div style={{ width: `${(findings / maxModule) * 100}%`, height: "100%", borderRadius: 3, backgroundColor: idx === 0 ? ds.severity.critical : idx < 3 ? ds.severity.high : ds.accent.default, transition: "width 0.5s ease" }} />
+                  </div>
+                  <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: ds.text.primary, width: 28, textAlign: "right", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{findings}</span>
                 </div>
-                <div style={{ flex: 1, height: 6, borderRadius: 3, backgroundColor: ds.bg.elevated, overflow: "hidden" }}>
-                  <div style={{ width: `${(findings / maxModule) * 100}%`, height: "100%", borderRadius: 3, backgroundColor: idx === 0 ? ds.severity.critical : idx < 3 ? ds.severity.high : ds.accent.default, transition: "width 0.5s ease" }} />
-                </div>
-                <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: ds.text.primary, width: 28, textAlign: "right", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{findings}</span>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </DSCard>
 
         <DSCard style={{ padding: 20 }}>
@@ -498,40 +502,115 @@ function HistoricalContent({ timeRange, setTimeRange, pageState }: { timeRange: 
             <div style={{ fontSize: ds.size.xs, color: ds.text.muted, marginTop: 2 }}>{timeRange === "all" ? "All time" : `Last ${timeRange}`}</div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "100px 50px 70px 70px 70px 70px", gap: 4, paddingBottom: 8, borderBottom: `1px solid ${ds.border.default}`, marginBottom: 6 }}>
-            {["Platform", "Scans", "Findings", "Reported", "Accepted", "Bounty"].map((h) => (
-              <span key={h} style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium, textTransform: "uppercase", letterSpacing: "0.05em", textAlign: h !== "Platform" ? "right" : "left" }}>{h}</span>
-            ))}
-          </div>
+          {data!.platformStats.length === 0 ? (
+            <div style={{ padding: "30px 0", textAlign: "center", color: ds.text.muted, fontSize: ds.size.sm }}>No bounty records yet</div>
+          ) : (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "100px 50px 70px 70px 70px 70px", gap: 4, paddingBottom: 8, borderBottom: `1px solid ${ds.border.default}`, marginBottom: 6 }}>
+                {["Platform", "Scans", "Findings", "Reported", "Accepted", "Bounty"].map((h) => (
+                  <span key={h} style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium, textTransform: "uppercase", letterSpacing: "0.05em", textAlign: h !== "Platform" ? "right" : "left" }}>{h}</span>
+                ))}
+              </div>
 
-          {PLATFORM_PERF.map((row, i) => (
-            <div key={row.platform} style={{ display: "grid", gridTemplateColumns: "100px 50px 70px 70px 70px 70px", gap: 4, padding: "8px 0", borderBottom: i < PLATFORM_PERF.length - 1 ? `1px solid ${ds.border.default}` : "none", alignItems: "center" }}>
-              <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.medium, color: ds.text.primary }}>{row.platform}</span>
-              <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.scans}</span>
-              <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.findings}</span>
-              <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.reported}</span>
-              <span style={{ fontSize: ds.size.xs, color: ds.accent.default, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: ds.weight.medium }}>{row.accepted}</span>
-              <span style={{ fontSize: ds.size.xs, color: ds.text.primary, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: ds.weight.semibold }}>{row.bounty}</span>
-            </div>
-          ))}
+              {data!.platformStats.map((row, i) => (
+                <div key={row.platform} style={{ display: "grid", gridTemplateColumns: "100px 50px 70px 70px 70px 70px", gap: 4, padding: "8px 0", borderBottom: i < data!.platformStats.length - 1 ? `1px solid ${ds.border.default}` : "none", alignItems: "center" }}>
+                  <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.medium, color: ds.text.primary }}>{row.platform}</span>
+                  <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.scans}</span>
+                  <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.findings}</span>
+                  <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.reported}</span>
+                  <span style={{ fontSize: ds.size.xs, color: ds.accent.default, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: ds.weight.medium }}>{row.accepted}</span>
+                  <span style={{ fontSize: ds.size.xs, color: ds.text.primary, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: ds.weight.semibold }}>{formatEur(row.bounty)}</span>
+                </div>
+              ))}
+            </>
+          )}
         </DSCard>
       </div>
     </div>
   );
 }
 
+function TimeRangePicker({ timeRange, setTimeRange }: { timeRange: TimeRange; setTimeRange: (r: TimeRange) => void }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 20 }}>
+      <div style={{ display: "flex", gap: 4, padding: 4, backgroundColor: ds.bg.elevated, borderRadius: ds.radius.lg, border: `1px solid ${ds.border.default}` }}>
+        {(["7d", "30d", "90d", "all"] as TimeRange[]).map((range) => (
+          <button
+            key={range}
+            onClick={() => setTimeRange(range)}
+            style={{ height: 28, padding: "0 14px", borderRadius: ds.radius.md, border: "none", backgroundColor: timeRange === range ? ds.accent.default : "transparent", color: timeRange === range ? "#000" : ds.text.muted, fontSize: ds.size.xs, fontWeight: timeRange === range ? ds.weight.semibold : ds.weight.medium, cursor: "pointer", transition: "all 0.15s ease", fontFamily: "Inter, sans-serif" }}
+          >
+            {range === "all" ? "All" : range}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function DashboardPage() {
-  const [pageState, setPageState] = useState<PageState>("default");
   const [activeTab, setActiveTab] = useState<ActiveTab>("today");
   const [timeRange, setTimeRange] = useState<TimeRange>("30d");
-  const [botOnline, setBotOnline] = useState(true);
   const [syncing, setSyncing] = useState(false);
+
+  const [overview, setOverview] = useState<OverviewData | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+
+  const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
 
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
 
-  const handleSync = () => {
+  const loadOverview = async () => {
+    setOverviewLoading(true);
+    setOverviewError(null);
+    try {
+      const res = await fetch("/api/stats/overview", { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setOverview(json);
+    } catch (e: any) {
+      setOverviewError(e?.message ?? "Network error");
+    } finally {
+      setOverviewLoading(false);
+    }
+  };
+
+  const loadAnalytics = async (range: TimeRange) => {
+    setAnalyticsLoading(true);
+    setAnalyticsError(null);
+    try {
+      const res = await fetch(`/api/stats/analytics?range=${range}`, { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setAnalytics(json);
+    } catch (e: any) {
+      setAnalyticsError(e?.message ?? "Network error");
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadOverview();
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "historical") loadAnalytics(timeRange);
+  }, [activeTab, timeRange]);
+
+  const handleSync = async () => {
     setSyncing(true);
-    setTimeout(() => setSyncing(false), 2200);
+    try {
+      await fetch("/api/programs/sync", { method: "POST", credentials: "same-origin" });
+      await loadOverview();
+    } catch {
+      // surfaced via overview reload error if any
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const tabs: Array<{ id: ActiveTab; label: string }> = [
@@ -541,45 +620,13 @@ export function DashboardPage() {
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "8px 14px", backgroundColor: ds.bg.elevated, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, marginBottom: 28, flexWrap: "wrap" }}>
-        <span style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium, textTransform: "uppercase", letterSpacing: "0.07em", flexShrink: 0 }}>Preview state</span>
-        <div style={{ display: "flex", gap: 4 }}>
-          {(["default", "loading", "empty", "error"] as PageState[]).map((s) => (
-            <button
-              key={s}
-              onClick={() => setPageState(s)}
-              style={{ height: 26, padding: "0 10px", borderRadius: ds.radius.md, border: `1px solid ${pageState === s ? ds.accent.default : ds.border.default}`, backgroundColor: pageState === s ? ds.accent.bg15 : "transparent", color: pageState === s ? ds.accent.default : ds.text.secondary, fontSize: ds.size.xs, fontWeight: ds.weight.medium, cursor: "pointer", fontFamily: "Inter, sans-serif", transition: "all 0.1s ease", textTransform: "capitalize" }}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-        {pageState === "default" && (
-          <>
-            <div style={{ width: 1, height: 18, backgroundColor: ds.border.default }} />
-            <span style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium }}>Bot:</span>
-            <div style={{ display: "flex", gap: 4 }}>
-              {[true, false].map((online) => (
-                <button
-                  key={String(online)}
-                  onClick={() => setBotOnline(online)}
-                  style={{ height: 26, padding: "0 10px", borderRadius: ds.radius.md, border: `1px solid ${botOnline === online ? (online ? ds.accent.default : ds.severity.critical) : ds.border.default}`, backgroundColor: botOnline === online ? (online ? ds.accent.bg15 : ds.severity.criticalBg) : "transparent", color: botOnline === online ? (online ? ds.accent.default : ds.severity.critical) : ds.text.secondary, fontSize: ds.size.xs, fontWeight: ds.weight.medium, cursor: "pointer", fontFamily: "Inter, sans-serif", transition: "all 0.1s ease" }}
-                >
-                  {online ? "Online" : "Offline"}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: ds.size["3xl"], fontWeight: ds.weight.bold, color: ds.text.primary, lineHeight: 1.2 }}>Dashboard</h1>
           <p style={{ margin: "4px 0 0", fontSize: ds.size.sm, color: ds.text.muted }}>{today}</p>
         </div>
 
-        <DSButton variant="primary" size="md" icon={<RefreshCw size={13} className={syncing ? "animate-spin" : ""} />} onClick={handleSync}>
+        <DSButton variant="primary" size="md" icon={<RefreshCw size={13} className={syncing ? "animate-spin" : ""} />} onClick={handleSync} disabled={syncing}>
           {syncing ? "Syncing…" : "Sync Programs"}
         </DSButton>
       </div>
@@ -596,8 +643,12 @@ export function DashboardPage() {
         ))}
       </div>
 
-      {activeTab === "today" && <TodayContent botOnline={botOnline} pageState={pageState} />}
-      {activeTab === "historical" && <HistoricalContent timeRange={timeRange} setTimeRange={setTimeRange} pageState={pageState} />}
+      {activeTab === "today" && (
+        <TodayContent data={overview} loading={overviewLoading} error={overviewError} onRetry={loadOverview} />
+      )}
+      {activeTab === "historical" && (
+        <HistoricalContent timeRange={timeRange} setTimeRange={setTimeRange} data={analytics} loading={analyticsLoading} error={analyticsError} onRetry={() => loadAnalytics(timeRange)} />
+      )}
     </div>
   );
 }

@@ -1,30 +1,99 @@
 "use client";
 
-import React, { useState } from "react";
-import { Download, TrendingUp, Clock, CheckCircle2, MoreHorizontal, ExternalLink } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { Download, TrendingUp, Clock, CheckCircle2, MoreHorizontal, ExternalLink, AlertCircle } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
-import { PAYOUTS } from "./mockData";
-import type { PayoutStatus } from "./mockData";
+import type { PayoutStatus, Payout } from "./types";
 
 const STATUS_CFG: Record<PayoutStatus, { label: string; color: string; bg: string }> = {
   paid: { label: "Paid", color: ds.accent.default, bg: ds.accent.bg15 },
   pending: { label: "Pending", color: ds.severity.high, bg: ds.severity.highBg },
 };
 
+interface RawPayout {
+  id?: string;
+  amount?: number | { value?: number };
+  currency?: string | { value?: string };
+  status?: string | { value?: string };
+  awardedAt?: string;
+  paidAt?: string;
+  date?: string;
+  programName?: string;
+  programId?: string;
+  finding?: string;
+  description?: string;
+  reportTitle?: string;
+  scanRef?: string;
+  reportId?: string;
+}
+
+function readNum(v: unknown): number {
+  if (typeof v === "number") return v;
+  if (v && typeof v === "object" && typeof (v as any).value === "number") return (v as any).value;
+  return 0;
+}
+
+function readStr(v: unknown, fallback = ""): string {
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object" && typeof (v as any).value === "string") return (v as any).value;
+  return fallback;
+}
+
+function normalizePayout(raw: RawPayout, idx: number): Payout {
+  const status = readStr(raw.status).toLowerCase();
+  return {
+    id: raw.id ?? `pay-${idx}`,
+    amount: readNum(raw.amount),
+    currency: readStr(raw.currency, "EUR") || "EUR",
+    status: status === "pending" || status === "awaiting" ? "pending" : "paid",
+    awardedAt: raw.awardedAt ?? raw.paidAt ?? raw.date ?? "",
+    program: raw.programName ?? raw.programId ?? "—",
+    scanRef: raw.scanRef ?? raw.reportId ?? "—",
+    finding: raw.finding ?? raw.description ?? raw.reportTitle ?? "—",
+  };
+}
+
 export function PayoutsTab() {
   const [statusFilter, setStatusFilter] = useState<"all" | PayoutStatus>("all");
   const [hoveredRow, setHoveredRow] = useState<string | null>(null);
+  const [payouts, setPayouts] = useState<Payout[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const filtered = PAYOUTS.filter((p) => statusFilter === "all" || p.status === statusFilter);
+  const loadPayouts = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/intigriti/payouts?limit=200", { credentials: "same-origin" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      const json = await res.json();
+      const records: RawPayout[] = json.records ?? json.payouts ?? [];
+      setPayouts(records.map((r, i) => normalizePayout(r, i)));
+    } catch (e: any) {
+      setError(e?.message ?? "Network error");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const totalPaid = PAYOUTS.filter((p) => p.status === "paid").reduce((s, p) => s + p.amount, 0);
-  const totalPending = PAYOUTS.filter((p) => p.status === "pending").reduce((s, p) => s + p.amount, 0);
+  useEffect(() => {
+    loadPayouts();
+  }, []);
+
+  const filtered = payouts.filter((p) => statusFilter === "all" || p.status === statusFilter);
+
+  const totalPaid = payouts.filter((p) => p.status === "paid").reduce((s, p) => s + p.amount, 0);
+  const totalPending = payouts.filter((p) => p.status === "pending").reduce((s, p) => s + p.amount, 0);
   const totalAll = totalPaid + totalPending;
 
   const handleExportCSV = () => {
+    if (payouts.length === 0) return;
     const headers = ["ID", "Program", "Finding", "Amount (EUR)", "Status", "Awarded At", "Scan Ref"];
-    const rows = PAYOUTS.map((p) => [p.id, p.program, p.finding, p.amount, p.status, p.awardedAt, p.scanRef]);
+    const rows = payouts.map((p) => [p.id, p.program, p.finding, p.amount, p.status, p.awardedAt, p.scanRef]);
     const csv = [headers, ...rows].map((r) => r.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -37,10 +106,18 @@ export function PayoutsTab() {
 
   return (
     <div>
+      {error && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, padding: "10px 14px", borderRadius: ds.radius.lg, backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40` }}>
+          <AlertCircle size={14} style={{ color: ds.severity.critical, flexShrink: 0 }} />
+          <span style={{ fontSize: ds.size.xs, color: ds.severity.critical, flex: 1 }}>Failed to load payouts: {error}</span>
+          <DSButton variant="secondary" size="sm" onClick={loadPayouts}>Retry</DSButton>
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 24 }}>
-        <RevenueCard label="Total Revenue" amount={totalAll} sub={`${PAYOUTS.length} payouts total`} color={ds.accent.default} icon={<TrendingUp size={14} style={{ color: ds.text.muted }} />} />
-        <RevenueCard label="Received" amount={totalPaid} sub={`${PAYOUTS.filter((p) => p.status === "paid").length} paid`} color={ds.accent.default} icon={<CheckCircle2 size={14} style={{ color: ds.text.muted }} />} />
-        <RevenueCard label="Pending" amount={totalPending} sub={`${PAYOUTS.filter((p) => p.status === "pending").length} awaiting`} color={ds.severity.high} icon={<Clock size={14} style={{ color: ds.text.muted }} />} />
+        <RevenueCard label="Total Revenue" amount={totalAll} sub={`${payouts.length} payouts total`} color={ds.accent.default} icon={<TrendingUp size={14} style={{ color: ds.text.muted }} />} />
+        <RevenueCard label="Received" amount={totalPaid} sub={`${payouts.filter((p) => p.status === "paid").length} paid`} color={ds.accent.default} icon={<CheckCircle2 size={14} style={{ color: ds.text.muted }} />} />
+        <RevenueCard label="Pending" amount={totalPending} sub={`${payouts.filter((p) => p.status === "pending").length} awaiting`} color={ds.severity.high} icon={<Clock size={14} style={{ color: ds.text.muted }} />} />
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
@@ -78,6 +155,14 @@ export function PayoutsTab() {
             </span>
           ))}
         </div>
+
+        {loading ? (
+          <div style={{ padding: "32px 16px", textAlign: "center", color: ds.text.muted, fontSize: ds.size.sm }}>Loading payouts…</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: "48px 16px", textAlign: "center", color: ds.text.muted, fontSize: ds.size.sm }}>
+            {payouts.length === 0 ? "No payouts yet" : "No payouts match the selected filter"}
+          </div>
+        ) : null}
 
         {filtered.map((payout, i) => {
           const cfg = STATUS_CFG[payout.status];
