@@ -348,8 +348,8 @@ async def _run_scan(req: ScanRequest, state: dict):
             scan_headers[key.strip()] = val.strip()
             add_log("INFO", "compliance", f"Custom header: {key.strip()}", req.scan_id)
 
-    request_delay = max(60.0 / req.rate_limit, 1.0)
-    add_log("INFO", "compliance", f"Rate limit: {req.rate_limit} req/min (delay: {request_delay:.1f}s)", req.scan_id)
+    rate_limit_per_min = max(int(req.rate_limit), 1)
+    add_log("INFO", "compliance", f"Rate limit: {rate_limit_per_min} req/min (enforced over 60s window)", req.scan_id)
 
     # Helper: save endpoints to dashboard DB
     async def _save_endpoints_to_db(scan_id: str, endpoints_list, callback_url: str | None, callback_token: str | None):
@@ -459,7 +459,7 @@ async def _run_scan(req: ScanRequest, state: dict):
 
             endpoints = []  # will be populated in the HttpClient block below
 
-        async with HttpClient(concurrency=3, request_delay=request_delay, timeout=30, headers=scan_headers, scope_enforcer=scope_enforcer) as http:
+        async with HttpClient(concurrency=3, rate_limit_per_min=rate_limit_per_min, timeout=30, headers=scan_headers, scope_enforcer=scope_enforcer) as http:
             # Only crawl if not resuming
             if not (req.resume and req.resume.endpoints):
                 crawler = EndpointCrawler(http, max_depth=3, scope_enforcer=scope_enforcer)
