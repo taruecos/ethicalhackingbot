@@ -2,8 +2,7 @@
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
-from urllib.parse import urlparse
+from dataclasses import dataclass
 
 import httpx
 from aiolimiter import AsyncLimiter
@@ -25,18 +24,26 @@ class RequestResult:
 
 
 class HttpClient:
-    """Rate-limited async HTTP client for scanning targets."""
+    """Rate-limited async HTTP client for scanning targets.
+
+    Rate limiting: `rate_limit_per_min` requests in any 60-second window.
+    Concurrency: bounded by `concurrency` simultaneous in-flight requests.
+    """
 
     def __init__(
         self,
         concurrency: int = 5,
-        request_delay: float = 1.0,
+        rate_limit_per_min: int = 30,
         timeout: float = 30.0,
         headers: dict | None = None,
         scope_enforcer=None,
     ):
         self._concurrency = concurrency
-        self._limiter = AsyncLimiter(concurrency, request_delay)
+        self._semaphore = asyncio.Semaphore(concurrency)
+        # AsyncLimiter(max_rate, time_period) = max_rate requests per time_period seconds.
+        # Compliance-critical: use the 60-second window directly so rate_limit_per_min == reqs/min.
+        self._limiter = AsyncLimiter(max(rate_limit_per_min, 1), 60)
+        self._rate_limit_per_min = rate_limit_per_min
         self._timeout = timeout
         self._default_headers = headers or {}
         self._client: httpx.AsyncClient | None = None
@@ -66,12 +73,26 @@ class HttpClient:
         cookies: dict | None = None,
     ) -> RequestResult:
         """Send a rate-limited HTTP request with scope-safe redirect handling."""
+        # Hard scope gate on every outbound request — compliance double-check.
+        # Without this, a scanner module bug could send a request to an out-of-scope URL.
+        if self._scope_enforcer and not self._scope_enforcer.is_in_scope(url):
+            logger.warning(f"BLOCKED out-of-scope request: {method} {url}")
+            return RequestResult(
+                url=url,
+                method=method,
+                status_code=0,
+                headers={},
+                body="",
+                elapsed_ms=0,
+                error=f"Out of scope: {url}",
+            )
+
         # Merge per-request headers with defaults — compliance headers (User-Agent, etc.)
         # from _default_headers always win and cannot be overridden by per-request headers
         merged_headers = dict(headers) if headers else {}
         merged_headers.update(self._default_headers)
 
-        async with self._limiter:
+        async with self._semaphore, self._limiter:
             try:
                 response = await self._client.request(
                     method=method,
