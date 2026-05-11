@@ -110,7 +110,7 @@ async def _flush_logs_to_dashboard(req: "ScanRequest", scan_state: dict):
 
     # Validate callback URL scope
     parsed_cb = urlparse(req.callback_url)
-    allowed_hosts = {"localhost", "127.0.0.1", "dashboard.ethicalhackingbot.com"}
+    allowed_hosts = {"localhost", "127.0.0.1", "dashboard", "dashboard.ethicalhackingbot.com"}
     if parsed_cb.hostname not in allowed_hosts and not (parsed_cb.hostname or "").endswith(".vercel.app"):
         return
     if parsed_cb.scheme not in ("https", "http"):
@@ -306,7 +306,7 @@ async def _notify_dashboard(req: ScanRequest, scan_state: dict, event: str = "pr
 
     # Validate callback URL scope — only allow HTTPS to known dashboard origins
     parsed_cb = urlparse(req.callback_url)
-    allowed_hosts = {"localhost", "127.0.0.1", "dashboard.ethicalhackingbot.com"}
+    allowed_hosts = {"localhost", "127.0.0.1", "dashboard", "dashboard.ethicalhackingbot.com"}
     if parsed_cb.hostname not in allowed_hosts and not (parsed_cb.hostname or "").endswith(".vercel.app"):
         logger.warning(f"Callback URL blocked — host {parsed_cb.hostname!r} not in allowed scope")
         return
