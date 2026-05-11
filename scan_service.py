@@ -264,6 +264,7 @@ async def start_scan(req: ScanRequest):
         "start_time": time.time(),
         "findings": [],
         "stats": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+        "phases": [],
         "endpoints_total": 0,
         "endpoints_scanned": 0,
         "scope_entries": [],
@@ -327,6 +328,7 @@ async def _notify_dashboard(req: ScanRequest, scan_state: dict, event: str = "pr
                 "event": event,
                 "status": scan_state["status"],
                 "phase": scan_state.get("phase", ""),
+                "phases": scan_state.get("phases", []),
                 "progress": scan_state.get("progress", 0),
                 "modules_done": scan_state.get("modules_done", 0),
                 "modules_total": scan_state.get("modules_total", 3),
@@ -422,6 +424,17 @@ async def _run_scan(req: ScanRequest, state: dict):
                 add_log("INFO", "persist", f"Saved {len(endpoints_list)} endpoints to DB (status {resp.status_code})", scan_id)
         except Exception as e:
             add_log("WARN", "persist", f"Failed to save endpoints: {e}", scan_id)
+
+    # Helper: append a phase entry to scan state so Scan.phases tracks per-module progression.
+    def _record_phase(name: str, started_at_ts: float, findings_count: int, status: str = "completed"):
+        state.setdefault("phases", []).append({
+            "name": name,
+            "startedAt": datetime.fromtimestamp(started_at_ts).isoformat(),
+            "finishedAt": datetime.now().isoformat(),
+            "durationMs": int((time.time() - started_at_ts) * 1000),
+            "findingsCount": findings_count,
+            "status": status,
+        })
 
     # Helper: save checkpoint to dashboard DB
     async def _save_checkpoint(scan_id: str, module_index: int, module_name: str, state: dict, callback_url: str | None, callback_token: str | None):
@@ -553,7 +566,8 @@ async def _run_scan(req: ScanRequest, state: dict):
 
                 # ─── Persist endpoints to DB ───
                 await _save_endpoints_to_db(req.scan_id, endpoints, req.callback_url, req.callback_token)
-                # Save initial checkpoint (recon done)
+                # Record recon phase + save initial checkpoint
+                _record_phase("recon", state["start_time"], 0)
                 await _save_checkpoint(req.scan_id, 0, "recon", state, req.callback_url, req.callback_token)
 
             if not endpoints:
@@ -582,6 +596,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["modules_done"] = 1
                 state["progress"] = 25
             else:
+                module_start_ts = time.time()
                 state["current_module"] = "idor"
                 add_log("INFO", "idor", f"Starting IDOR scanner on {len(endpoints)} endpoints", req.scan_id)
                 await _notify_dashboard(req, state)
@@ -624,7 +639,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                             sev = finding.severity.lower()
                             if sev in state["stats"]:
                                 state["stats"][sev] += 1
-                            add_log("ERROR", "idor", f"FOUND IDOR: {finding.url} [{finding.severity}]", req.scan_id)
+                            add_log("WARN", "idor", f"FOUND IDOR: {finding.url} [{finding.severity}]", req.scan_id)
 
                     idor_tested += 1
                     state["endpoints_scanned"] = idor_tested
@@ -635,6 +650,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["progress"] = 25
                 state["findings"] = findings
                 add_log("INFO", "idor", f"IDOR scan complete — {idor_count} findings from {idor_tested} endpoints", req.scan_id)
+                _record_phase("idor", module_start_ts, idor_count)
                 await _notify_dashboard(req, state)
                 await _save_checkpoint(req.scan_id, 1, "idor", state, req.callback_url, req.callback_token)
 
@@ -646,6 +662,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["modules_done"] = 2
                 state["progress"] = 35
             else:
+                module_start_ts = time.time()
                 state["current_module"] = "access_control"
                 add_log("INFO", "access_control", f"Starting access control scanner on {target_url}", req.scan_id)
                 await _notify_dashboard(req, state)
@@ -675,7 +692,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                     sev = f.severity.lower()
                     if sev in state["stats"]:
                         state["stats"][sev] += 1
-                    add_log("ERROR", "access_control", f"FOUND: {f.url} [{f.severity}]", req.scan_id)
+                    add_log("WARN", "access_control", f"FOUND: {f.url} [{f.severity}]", req.scan_id)
 
                 add_log("DEBUG", "access_control", "Testing method overrides and header bypasses...", req.scan_id)
                 for ep in endpoints[:20]:
@@ -698,7 +715,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                         sev = method_finding.severity.lower()
                         if sev in state["stats"]:
                             state["stats"][sev] += 1
-                        add_log("ERROR", "access_control", f"FOUND method bypass: {method_finding.url}", req.scan_id)
+                        add_log("WARN", "access_control", f"FOUND method bypass: {method_finding.url}", req.scan_id)
 
                     header_findings = await ac_scanner.test_header_bypass(ep.url, scan_headers)
                     for hf in header_findings:
@@ -715,13 +732,14 @@ async def _run_scan(req: ScanRequest, state: dict):
                         sev = hf.severity.lower()
                         if sev in state["stats"]:
                             state["stats"][sev] += 1
-                        add_log("ERROR", "access_control", f"FOUND header bypass: {hf.url}", req.scan_id)
+                        add_log("WARN", "access_control", f"FOUND header bypass: {hf.url}", req.scan_id)
 
                 ac_count = len([f for f in findings if f["module"] == "access_control"])
                 state["modules_done"] = 2
                 state["progress"] = 35
                 state["findings"] = findings
                 add_log("INFO", "access_control", f"Access control scan complete — {ac_count} findings", req.scan_id)
+                _record_phase("access_control", module_start_ts, ac_count)
                 await _notify_dashboard(req, state)
                 await _save_checkpoint(req.scan_id, 2, "access_control", state, req.callback_url, req.callback_token)
 
@@ -733,6 +751,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["modules_done"] = 3
                 state["progress"] = 45
             else:
+                module_start_ts = time.time()
                 state["current_module"] = "info_disclosure"
                 add_log("INFO", "info_disclosure", f"Starting info disclosure scanner on {target_url}", req.scan_id)
                 await _notify_dashboard(req, state)
@@ -793,6 +812,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["progress"] = 45
                 state["findings"] = findings
                 add_log("INFO", "info_disclosure", f"Info disclosure scan complete — {id_count} findings", req.scan_id)
+                _record_phase("info_disclosure", module_start_ts, id_count)
                 await _notify_dashboard(req, state)
                 await _save_checkpoint(req.scan_id, 3, "info_disclosure", state, req.callback_url, req.callback_token)
 
@@ -804,6 +824,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["modules_done"] = 4
                 state["progress"] = 55
             else:
+                module_start_ts = time.time()
                 state["current_module"] = "xss"
                 add_log("INFO", "xss", f"Starting XSS scanner on {len(endpoints[:25])} endpoints", req.scan_id)
                 await _notify_dashboard(req, state)
@@ -830,7 +851,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                             sev = f.severity.lower()
                             if sev in state["stats"]:
                                 state["stats"][sev] += 1
-                            add_log("ERROR", "xss", f"FOUND: {f.xss_type.value} XSS at {f.url} [{f.severity}]", req.scan_id)
+                            add_log("WARN", "xss", f"FOUND: {f.xss_type.value} XSS at {f.url} [{f.severity}]", req.scan_id)
                     except Exception:
                         pass
 
@@ -839,6 +860,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["progress"] = 55
                 state["findings"] = findings
                 add_log("INFO", "xss", f"XSS scan complete — {xss_count} findings", req.scan_id)
+                _record_phase("xss", module_start_ts, xss_count)
                 await _notify_dashboard(req, state)
                 await _save_checkpoint(req.scan_id, 4, "xss", state, req.callback_url, req.callback_token)
 
@@ -850,6 +872,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["modules_done"] = 5
                 state["progress"] = 65
             else:
+                module_start_ts = time.time()
                 state["current_module"] = "sqli"
                 add_log("INFO", "sqli", f"Starting SQLi scanner on {len(endpoints[:20])} endpoints", req.scan_id)
                 await _notify_dashboard(req, state)
@@ -876,7 +899,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                             sev = f.severity.lower()
                             if sev in state["stats"]:
                                 state["stats"][sev] += 1
-                            add_log("ERROR", "sqli", f"FOUND: {f.sqli_type.value} SQLi at {f.url} [{f.severity}]", req.scan_id)
+                            add_log("WARN", "sqli", f"FOUND: {f.sqli_type.value} SQLi at {f.url} [{f.severity}]", req.scan_id)
                     except Exception:
                         pass
 
@@ -885,6 +908,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["progress"] = 65
                 state["findings"] = findings
                 add_log("INFO", "sqli", f"SQLi scan complete — {sqli_count} findings", req.scan_id)
+                _record_phase("sqli", module_start_ts, sqli_count)
                 await _notify_dashboard(req, state)
                 await _save_checkpoint(req.scan_id, 5, "sqli", state, req.callback_url, req.callback_token)
 
@@ -896,6 +920,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["modules_done"] = 6
                 state["progress"] = 75
             else:
+                module_start_ts = time.time()
                 state["current_module"] = "csrf"
                 add_log("INFO", "csrf", f"Starting CSRF scanner on state-changing endpoints", req.scan_id)
                 await _notify_dashboard(req, state)
@@ -923,7 +948,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                                 sev = f.severity.lower()
                                 if sev in state["stats"]:
                                     state["stats"][sev] += 1
-                                add_log("ERROR", "csrf", f"FOUND: Missing {f.missing_protection} at {f.url} [{f.severity}]", req.scan_id)
+                                add_log("WARN", "csrf", f"FOUND: Missing {f.missing_protection} at {f.url} [{f.severity}]", req.scan_id)
                         except Exception:
                             pass
 
@@ -932,6 +957,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["progress"] = 75
                 state["findings"] = findings
                 add_log("INFO", "csrf", f"CSRF scan complete — {csrf_count} findings", req.scan_id)
+                _record_phase("csrf", module_start_ts, csrf_count)
                 await _notify_dashboard(req, state)
                 await _save_checkpoint(req.scan_id, 6, "csrf", state, req.callback_url, req.callback_token)
 
@@ -943,6 +969,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["modules_done"] = 7
                 state["progress"] = 82
             else:
+                module_start_ts = time.time()
                 state["current_module"] = "ssrf"
                 add_log("INFO", "ssrf", f"Starting SSRF scanner on {target_url}", req.scan_id)
                 await _notify_dashboard(req, state)
@@ -967,7 +994,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                     sev = f.severity.lower()
                     if sev in state["stats"]:
                         state["stats"][sev] += 1
-                    add_log("ERROR", "ssrf", f"FOUND: SSRF at {f.url} [{f.severity}]", req.scan_id)
+                    add_log("WARN", "ssrf", f"FOUND: SSRF at {f.url} [{f.severity}]", req.scan_id)
 
                 # Also test discovered endpoints with URL-like params
                 for ep in endpoints[:15]:
@@ -991,7 +1018,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                             sev = f.severity.lower()
                             if sev in state["stats"]:
                                 state["stats"][sev] += 1
-                            add_log("ERROR", "ssrf", f"FOUND: SSRF via param at {f.url} [{f.severity}]", req.scan_id)
+                            add_log("WARN", "ssrf", f"FOUND: SSRF via param at {f.url} [{f.severity}]", req.scan_id)
                     except Exception:
                         pass
 
@@ -1000,6 +1027,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["progress"] = 82
                 state["findings"] = findings
                 add_log("INFO", "ssrf", f"SSRF scan complete — {ssrf_count} findings", req.scan_id)
+                _record_phase("ssrf", module_start_ts, ssrf_count)
                 await _notify_dashboard(req, state)
                 await _save_checkpoint(req.scan_id, 7, "ssrf", state, req.callback_url, req.callback_token)
 
@@ -1011,6 +1039,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["modules_done"] = 8
                 state["progress"] = 90
             else:
+                module_start_ts = time.time()
                 state["current_module"] = "differential"
                 add_log("INFO", "differential", f"Starting differential scanner on {len(endpoints)} endpoints", req.scan_id)
                 await _notify_dashboard(req, state)
@@ -1043,7 +1072,7 @@ async def _run_scan(req: ScanRequest, state: dict):
                             sev = f.severity.lower()
                             if sev in state["stats"]:
                                 state["stats"][sev] += 1
-                            add_log("ERROR", "differential", f"FOUND: {f.finding_type} at {f.url} [{f.severity}]", req.scan_id)
+                            add_log("WARN", "differential", f"FOUND: {f.finding_type} at {f.url} [{f.severity}]", req.scan_id)
                     except Exception:
                         pass
 
@@ -1052,12 +1081,14 @@ async def _run_scan(req: ScanRequest, state: dict):
                 state["progress"] = 90
                 state["findings"] = findings
                 add_log("INFO", "differential", f"Differential scan complete — {diff_count} findings", req.scan_id)
+                _record_phase("differential", module_start_ts, diff_count)
                 await _notify_dashboard(req, state)
                 await _save_checkpoint(req.scan_id, 8, "differential", state, req.callback_url, req.callback_token)
 
         # ═══════════════════════════════════════════
         # Phase 3: Report
         # ═══════════════════════════════════════════
+        report_start_ts = time.time()
         state["phase"] = "report"
         state["current_module"] = "report"
         state["progress"] = 95
@@ -1108,6 +1139,7 @@ async def _run_scan(req: ScanRequest, state: dict):
         state["progress"] = 100
         state["status"] = "complete"
         state["findings"] = findings
+        _record_phase("report", report_start_ts, len(findings))
         add_log("INFO", "scan", f"SCAN COMPLETE — {len(findings)} findings in {int(time.time() - state['start_time'])}s", req.scan_id)
 
         await _notify_dashboard(req, state, "complete")
