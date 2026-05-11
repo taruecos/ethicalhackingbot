@@ -293,6 +293,10 @@ export function ActiveTab() {
                 <DSButton variant="primary" size="sm" icon={<Play size={11} />} onClick={() => startQueued(scan.id)}>
                   Start
                 </DSButton>
+                <DSButton variant="ghost" size="sm" onClick={() => cancelScan(scan.id)}>
+                  <X size={12} style={{ marginRight: 4 }} />
+                  Cancel
+                </DSButton>
               </div>
             ))}
           </DSCard>
