@@ -33,12 +33,28 @@ interface ApiScan {
 }
 
 interface LogEntry {
-  id: number;
+  id: string;
   time: string;
   level: string;
   module: string;
   message: string;
 }
+
+interface ApiLog {
+  id: string;
+  timestamp: string;
+  level: string;
+  module: string;
+  message: string;
+}
+
+function formatLogTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "--:--:--";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+}
+
+const MAX_LOGS_KEPT = 1000;
 
 const LEVEL_COLORS: Record<string, string> = {
   INFO: ds.accent.default,
@@ -97,6 +113,7 @@ export function ActiveTab() {
   const [logModule, setLogModule] = useState("all");
   const [autoScroll, setAutoScroll] = useState(true);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const lastLogIdRef = useRef<Map<string, string>>(new Map());
 
   const loadScans = async () => {
     try {
@@ -118,6 +135,66 @@ export function ActiveTab() {
     const interval = setInterval(loadScans, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  const runningIds = (scans ?? [])
+    .filter((s) => s.status === "RUNNING" || s.status === "ERROR")
+    .map((s) => s.id);
+  const runningIdsKey = runningIds.join(",");
+
+  useEffect(() => {
+    if (runningIds.length === 0) return;
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const fetchLogs = async () => {
+      if (inFlight || cancelled) return;
+      inFlight = true;
+      try {
+        const incoming: LogEntry[] = [];
+        for (const scanId of runningIds) {
+          const cursor = lastLogIdRef.current.get(scanId);
+          const qs = cursor ? `?after=${encodeURIComponent(cursor)}` : "";
+          try {
+            const res = await fetch(`/api/scans/${scanId}/logs${qs}`, { credentials: "same-origin" });
+            if (!res.ok) continue;
+            const json = (await res.json()) as { logs?: ApiLog[] };
+            const items = json.logs ?? [];
+            if (items.length === 0) continue;
+            lastLogIdRef.current.set(scanId, items[items.length - 1].id);
+            for (const item of items) {
+              incoming.push({
+                id: item.id,
+                time: formatLogTime(item.timestamp),
+                level: (item.level || "INFO").toUpperCase(),
+                module: item.module || "—",
+                message: item.message ?? "",
+              });
+            }
+          } catch {
+            // swallow per-scan errors, keep polling others
+          }
+        }
+        if (!cancelled && incoming.length > 0) {
+          setLogs((prev) => {
+            const merged = prev.concat(incoming);
+            return merged.length > MAX_LOGS_KEPT ? merged.slice(-MAX_LOGS_KEPT) : merged;
+          });
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    fetchLogs();
+    const id = setInterval(fetchLogs, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+    // runningIds is intentionally captured via runningIdsKey
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningIdsKey]);
 
   useEffect(() => {
     if (autoScroll && logsEndRef.current) {

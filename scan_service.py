@@ -94,7 +94,58 @@ def add_log(level: str, module: str, message: str, scan_id: str | None = None):
     scan_logs.append(entry)
     if len(scan_logs) > 2000:
         scan_logs[:] = scan_logs[-1000:]
+    # Buffer entries for forwarding to dashboard DB on next flush
+    if scan_id and scan_id in active_scans:
+        active_scans[scan_id].setdefault("pending_logs", []).append(entry)
     logger.info(f"[{module}] {message}")
+
+
+async def _flush_logs_to_dashboard(req: "ScanRequest", scan_state: dict):
+    """Drain pending logs for a scan and POST them to the dashboard."""
+    if not req.callback_url:
+        return
+    pending = scan_state.get("pending_logs")
+    if not pending:
+        return
+
+    # Validate callback URL scope
+    parsed_cb = urlparse(req.callback_url)
+    allowed_hosts = {"localhost", "127.0.0.1", "dashboard.ethicalhackingbot.com"}
+    if parsed_cb.hostname not in allowed_hosts and not (parsed_cb.hostname or "").endswith(".vercel.app"):
+        return
+    if parsed_cb.scheme not in ("https", "http"):
+        return
+
+    # Atomic drain — slice up to 200, replace list with the remainder
+    batch = pending[:200]
+    scan_state["pending_logs"] = pending[200:]
+    if not batch:
+        return
+
+    try:
+        import httpx
+        base_url = req.callback_url.rsplit("/progress", 1)[0]
+        url = f"{base_url}/logs"
+        headers = {"Content-Type": "application/json"}
+        if req.callback_token:
+            headers["Authorization"] = f"Bearer {req.callback_token}"
+        payload = {
+            "logs": [
+                {
+                    "level": e["level"],
+                    "module": e["module"],
+                    "message": e["message"],
+                    "timestamp": e["timestamp"],
+                }
+                for e in batch
+            ]
+        }
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+            await client.post(url, json=payload, headers=headers)
+    except Exception as e:
+        # On failure, re-queue the batch at the head so we retry on next flush
+        scan_state["pending_logs"] = batch + scan_state.get("pending_logs", [])
+        logger.warning(f"Log flush failed: {e}")
 
 
 class RulesOfEngagement(BaseModel):
@@ -247,6 +298,9 @@ async def cancel_scan(scan_id: str):
 
 async def _notify_dashboard(req: ScanRequest, scan_state: dict, event: str = "progress"):
     """Send progress update to Next.js dashboard."""
+    # Flush any buffered logs first so they appear in the UI alongside this update
+    await _flush_logs_to_dashboard(req, scan_state)
+
     if not req.callback_url:
         return
 

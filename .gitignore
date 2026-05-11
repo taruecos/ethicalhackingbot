@@ -13,7 +13,7 @@ config/config.yaml
 # Data & Reports
 data/
 reports/
-logs/
+/logs/
 
 # IDE
 .vscode/

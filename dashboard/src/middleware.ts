@@ -8,10 +8,11 @@ const PUBLIC_API_PATHS = new Set<string>([
   "/api/auth/status",
 ]);
 
-const BOT_CALLBACK_PATTERNS: RegExp[] = [
-  /^\/api\/scans\/[^/]+\/progress$/,
-  /^\/api\/scans\/[^/]+\/checkpoint$/,
-  /^\/api\/scans\/[^/]+\/endpoints$/,
+const BOT_CALLBACK_PATTERNS: { method: string; pattern: RegExp }[] = [
+  { method: "PATCH", pattern: /^\/api\/scans\/[^/]+\/progress$/ },
+  { method: "POST", pattern: /^\/api\/scans\/[^/]+\/checkpoint$/ },
+  { method: "POST", pattern: /^\/api\/scans\/[^/]+\/endpoints$/ },
+  { method: "POST", pattern: /^\/api\/scans\/[^/]+\/logs$/ },
 ];
 
 function constantTimeEquals(a: string, b: string): boolean {
@@ -50,7 +51,9 @@ export function middleware(req: NextRequest) {
   }
 
   if (isApi) {
-    const isBotCallback = BOT_CALLBACK_PATTERNS.some((rx) => rx.test(pathname));
+    const isBotCallback = BOT_CALLBACK_PATTERNS.some(
+      (bc) => bc.method === req.method && bc.pattern.test(pathname)
+    );
     if (isBotCallback) {
       const auth = req.headers.get("authorization") || "";
       const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";

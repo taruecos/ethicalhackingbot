@@ -62,11 +62,27 @@ model Scan {
   findings       Finding[]
   crawlEndpoints CrawlEndpoint[]
   checkpoint     ScanCheckpoint?
+  logs           ScanLog[]
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
   @@index([status])
   @@index([target])
+}
+
+// ── Scan Logs (live progress stream) ──
+
+model ScanLog {
+  id        String   @id @default(cuid())
+  scanId    String
+  scan      Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  timestamp DateTime @default(now())
+  level     String   // INFO | WARN | ERROR | DEBUG | CRITICAL
+  module    String
+  message   String   @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([scanId, createdAt])
 }
 
 enum ScanStatus {
