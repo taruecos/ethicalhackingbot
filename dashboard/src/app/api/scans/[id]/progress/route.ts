@@ -1,7 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
+import { Prisma, ScanStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { verifyBearer } from "@/lib/auth";
+
+// Scanner sends lowercase status strings ("running", "complete", "error",
+// "cancelled", "blocked"). Prisma enum requires uppercase. Map at the boundary.
+function normalizeStatus(raw: unknown): ScanStatus | null {
+  if (typeof raw !== "string") return null;
+  switch (raw.toLowerCase()) {
+    case "queued":
+      return ScanStatus.QUEUED;
+    case "running":
+      return ScanStatus.RUNNING;
+    case "complete":
+    case "completed":
+      return ScanStatus.COMPLETE;
+    case "error":
+    case "blocked":
+      return ScanStatus.ERROR;
+    case "cancelled":
+    case "canceled":
+      return ScanStatus.CANCELLED;
+    default:
+      return null;
+  }
+}
 
 /**
  * Bot callback endpoint — receives scan progress updates from the Python bot.
@@ -26,8 +49,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   // Build update data
   const updateData: Record<string, unknown> = {};
 
-  if (status) {
-    updateData.status = status as "RUNNING" | "COMPLETE" | "ERROR" | "CANCELLED";
+  const normalizedStatus = normalizeStatus(status);
+  if (normalizedStatus) {
+    updateData.status = normalizedStatus;
   }
   if (phases) {
     updateData.phases = phases;
@@ -38,10 +62,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (error) {
     updateData.error = error;
   }
-  if (status === "COMPLETE") {
-    updateData.finishedAt = new Date();
-  }
-  if (status === "ERROR") {
+  if (normalizedStatus === ScanStatus.COMPLETE || normalizedStatus === ScanStatus.ERROR) {
     updateData.finishedAt = new Date();
   }
 
