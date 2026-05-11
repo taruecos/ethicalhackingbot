@@ -74,15 +74,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   // If findings are provided, create them in DB
   if (findings && Array.isArray(findings) && findings.length > 0) {
-    // Build stats from findings
-    const stats: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0 };
-
     const findingData = findings.map((f: Record<string, unknown>) => {
       const severity = ((f.severity as string) || "INFO").toUpperCase();
-      const sevKey = severity.toLowerCase();
-      if (sevKey in stats) stats[sevKey]++;
-      stats.total++;
-
       return {
         scanId: id,
         module: (f.module as string) || "unknown",
@@ -103,6 +96,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       seen.add(key);
       return true;
     });
+
+    // Compute stats from the deduped set so Scan.stats matches Finding rows.
+    const stats: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0 };
+    for (const f of uniqueFindings) {
+      const sevKey = f.severity.toLowerCase();
+      if (sevKey in stats) stats[sevKey]++;
+      stats.total++;
+    }
 
     // Delete existing findings for this scan to prevent duplicates on resume
     await prisma.finding.deleteMany({ where: { scanId: id } });
