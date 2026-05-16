@@ -9,6 +9,7 @@ import type { Filters } from "./FilterToolbar";
 import { BulkActionsBar } from "./BulkActionsBar";
 import { FindingsTable } from "./FindingsTable";
 import { FindingDrawer } from "./FindingDrawer";
+import { triggerDownload } from "@/lib/triggerDownload";
 import { mapApiFinding } from "./types";
 import type { Finding, FindingStatus, Severity } from "./types";
 
@@ -145,24 +146,14 @@ export function FindingsPage() {
       ...rows.map((f) => [f.id, f.title, f.severity, f.status, f.cvss, f.cwe, f.module, f.url, f.firstSeen, f.program]),
     ].map((r) => r.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "findings-export.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerDownload(blob, "findings-export.csv");
     clearSelection();
   };
   const bulkReport = () => {
     const rows = filtered.filter((f) => selected.has(f.id));
     const md = rows.map((f) => `# ${f.title}\n**Severity:** ${f.severity} | **CVSS:** ${f.cvss} | **CWE:** ${f.cwe}\n**URL:** ${f.url}\n\n${f.description}\n\n---`).join("\n\n");
     const blob = new Blob([md], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "findings-report.md";
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerDownload(blob, "findings-report.md");
     clearSelection();
   };
 
