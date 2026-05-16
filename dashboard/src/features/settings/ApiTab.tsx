@@ -157,7 +157,10 @@ export function ApiTab({ onSave, onError }: ApiTabProps) {
         {tokens.length === 0 ? (
           <div style={{ textAlign: "center", padding: "28px 0", color: ds.text.muted, fontSize: ds.size.xs }}>No tokens yet — create one to get started.</div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 0, overflowX: "auto", overflowY: "hidden" }}>
+            {/* min-width keeps the token grid intact and lets the table
+                scroll horizontally on narrow viewports (e.g. 375px). */}
+            <div style={{ minWidth: 560, display: "flex", flexDirection: "column" }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 120px auto", gap: 12, padding: "6px 12px", borderBottom: `1px solid ${ds.border.default}` }}>
               {["Token name", "Created", "Last used", ""].map((h) => (
                 <span key={h} style={{ fontSize: 10, fontWeight: ds.weight.semibold, color: ds.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{h}</span>
@@ -187,6 +190,7 @@ export function ApiTab({ onSave, onError }: ApiTabProps) {
                 </DSButton>
               </div>
             ))}
+            </div>
           </div>
         )}
       </SettingsCard>

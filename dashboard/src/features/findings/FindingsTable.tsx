@@ -17,6 +17,10 @@ function cvssColor(score: number): string {
 }
 
 const COLS = "32px 90px 116px 1fr 100px 180px 64px 84px";
+// Sum of the fixed columns + a sensible min for the 1fr cell. Used as the
+// inner table min-width so horizontal scroll kicks in on narrow viewports
+// (e.g. 375px) instead of crushing/overflowing the page layout.
+const TABLE_MIN_WIDTH = 880;
 
 function Checkbox({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -123,18 +127,21 @@ export function FindingsTable({ findings, loading, isFiltered, selected, onSelec
 
   if (loading) {
     return (
-      <div style={{ backgroundColor: ds.bg.surface, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, overflow: "hidden" }}>
-        <TableHeader allSelected={false} onSelectAll={() => {}} />
-        {Array.from({ length: 10 }).map((_, i) => <SkeletonRow key={i} />)}
+      <div style={{ backgroundColor: ds.bg.surface, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, overflowX: "auto", overflowY: "hidden" }}>
+        <div style={{ minWidth: TABLE_MIN_WIDTH }}>
+          <TableHeader allSelected={false} onSelectAll={() => {}} />
+          {Array.from({ length: 10 }).map((_, i) => <SkeletonRow key={i} />)}
+        </div>
       </div>
     );
   }
 
   if (findings.length === 0) {
     return (
-      <div style={{ backgroundColor: ds.bg.surface, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, overflow: "hidden" }}>
-        <TableHeader allSelected={false} onSelectAll={() => {}} />
-        <div style={{ padding: "72px 32px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+      <div style={{ backgroundColor: ds.bg.surface, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, overflowX: "auto", overflowY: "hidden" }}>
+        <div style={{ minWidth: TABLE_MIN_WIDTH }}>
+          <TableHeader allSelected={false} onSelectAll={() => {}} />
+          <div style={{ padding: "72px 32px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
           <ShieldCheck size={52} style={{ color: ds.accent.default, opacity: 0.7 }} />
           {isFiltered ? (
             <>
@@ -150,22 +157,25 @@ export function FindingsTable({ findings, loading, isFiltered, selected, onSelec
               <div style={{ fontSize: ds.size.sm, color: ds.text.muted, maxWidth: 380 }}>Your scans are clean — no findings have been reported yet. Run a scan to start discovering vulnerabilities.</div>
             </>
           )}
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div style={{ backgroundColor: ds.bg.surface, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, overflow: "hidden" }}>
-      <TableHeader allSelected={allSelected} onSelectAll={(v) => onSelectAll(v)} />
-      {findings.map((f) => (
-        <TableRow key={f.id} finding={f} selected={selected.has(f.id)} onSelect={(v) => onSelect(f.id, v)} onClick={() => onRowClick(f)} />
-      ))}
-      <div style={{ padding: "8px 16px", backgroundColor: ds.bg.elevated, borderTop: `1px solid ${ds.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>
-          {findings.length} finding{findings.length !== 1 ? "s" : ""}
-          {selected.size > 0 && ` · ${selected.size} selected`}
-        </span>
+    <div style={{ backgroundColor: ds.bg.surface, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, overflowX: "auto", overflowY: "hidden" }}>
+      <div style={{ minWidth: TABLE_MIN_WIDTH }}>
+        <TableHeader allSelected={allSelected} onSelectAll={(v) => onSelectAll(v)} />
+        {findings.map((f) => (
+          <TableRow key={f.id} finding={f} selected={selected.has(f.id)} onSelect={(v) => onSelect(f.id, v)} onClick={() => onRowClick(f)} />
+        ))}
+        <div style={{ padding: "8px 16px", backgroundColor: ds.bg.elevated, borderTop: `1px solid ${ds.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>
+            {findings.length} finding{findings.length !== 1 ? "s" : ""}
+            {selected.size > 0 && ` · ${selected.size} selected`}
+          </span>
+        </div>
       </div>
     </div>
   );

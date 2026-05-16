@@ -216,10 +216,10 @@ function TodayContent({ data, loading, error, onRetry }: { data: OverviewData | 
     return (
       <div>
         <div className="animate-pulse" style={{ height: 48, borderRadius: ds.radius.lg, backgroundColor: ds.bg.elevated, marginBottom: 24 }} />
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 24 }}>
           {[0, 1, 2, 3].map((i) => <StatCardSkeleton key={i} />)}
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 16 }}>
           <CardSkeleton height={280} />
           <CardSkeleton height={280} />
         </div>
@@ -276,14 +276,14 @@ function TodayContent({ data, loading, error, onRetry }: { data: OverviewData | 
         </span>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 24 }}>
         <StatCard label="Total Scans" value={data.totalScans} icon={<ScanLine size={14} style={{ color: ds.text.muted }} />} />
         <StatCard label="Active Scans" value={data.activeScans} delta={data.activeScans > 0 ? "in progress" : "idle"} icon={<Loader2 size={14} style={{ color: ds.text.muted }} />} spinning={data.activeScans > 0} />
         <StatCard label="Total Findings" value={data.totalFindings} icon={<Bug size={14} style={{ color: ds.text.muted }} />} />
         <StatCard label="Critical Findings" value={data.criticalFindings} icon={<AlertTriangle size={14} style={{ color: ds.severity.critical }} />} valueColor={data.criticalFindings > 0 ? ds.severity.critical : undefined} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 16 }}>
         <DSCard style={{ padding: 20 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
             <span style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.text.primary }}>Severity Distribution</span>
@@ -333,26 +333,30 @@ function TodayContent({ data, loading, error, onRetry }: { data: OverviewData | 
             <div style={{ padding: "30px 0", textAlign: "center", color: ds.text.muted, fontSize: ds.size.sm }}>No scans yet</div>
           ) : (
             <>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 70px 50px", gap: 8, padding: "0 0 8px", borderBottom: `1px solid ${ds.border.default}`, marginBottom: 8 }}>
-                {["Target", "Status", "Duration", "Finds"].map((h) => (
-                  <span key={h} style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</span>
-                ))}
-              </div>
+              <div style={{ overflowX: "auto", overflowY: "hidden" }}>
+                <div style={{ minWidth: 320 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 70px 50px", gap: 8, padding: "0 0 8px", borderBottom: `1px solid ${ds.border.default}`, marginBottom: 8 }}>
+                    {["Target", "Status", "Duration", "Finds"].map((h) => (
+                      <span key={h} style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</span>
+                    ))}
+                  </div>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                {data.recentScans.map((scan) => {
-                  const findings = getFindingsCount(scan.stats);
-                  return (
-                    <div key={scan.id} style={{ display: "grid", gridTemplateColumns: "1fr 90px 70px 50px", gap: 8, padding: "7px 0", borderRadius: ds.radius.md, alignItems: "center", borderBottom: `1px solid ${ds.border.default}` }}>
-                      <span style={{ fontSize: ds.size.xs, color: ds.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>{scan.target}</span>
-                      <ScanStatusBadge status={scan.status} />
-                      <span style={{ fontSize: ds.size.xs, color: ds.text.muted, fontVariantNumeric: "tabular-nums" }}>{formatDuration(scan.startedAt, scan.finishedAt)}</span>
-                      <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: findings > 0 ? ds.severity.high : ds.text.muted, fontVariantNumeric: "tabular-nums" }}>
-                        {findings > 0 ? findings : "—"}
-                      </span>
-                    </div>
-                  );
-                })}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    {data.recentScans.map((scan) => {
+                      const findings = getFindingsCount(scan.stats);
+                      return (
+                        <div key={scan.id} style={{ display: "grid", gridTemplateColumns: "1fr 90px 70px 50px", gap: 8, padding: "7px 0", borderRadius: ds.radius.md, alignItems: "center", borderBottom: `1px solid ${ds.border.default}` }}>
+                          <span style={{ fontSize: ds.size.xs, color: ds.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>{scan.target}</span>
+                          <ScanStatusBadge status={scan.status} />
+                          <span style={{ fontSize: ds.size.xs, color: ds.text.muted, fontVariantNumeric: "tabular-nums" }}>{formatDuration(scan.startedAt, scan.finishedAt)}</span>
+                          <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: findings > 0 ? ds.severity.high : ds.text.muted, fontVariantNumeric: "tabular-nums" }}>
+                            {findings > 0 ? findings : "—"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             </>
           )}
@@ -369,10 +373,10 @@ function HistoricalContent({ timeRange, setTimeRange, data, loading, error, onRe
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 20 }}>
           <div className="animate-pulse" style={{ width: 200, height: 30, borderRadius: ds.radius.lg, backgroundColor: ds.bg.elevated }} />
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 24 }}>
           {[0, 1, 2, 3].map((i) => <StatCardSkeleton key={i} />)}
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 16 }}>
           <CardSkeleton height={260} />
           <CardSkeleton height={260} />
           <CardSkeleton height={320} />
@@ -423,14 +427,14 @@ function HistoricalContent({ timeRange, setTimeRange, data, loading, error, onRe
     <div>
       <TimeRangePicker timeRange={timeRange} setTimeRange={setTimeRange} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 24 }}>
         <StatCard label="Total Bounties" value={data!.totalBounties} delta="reports accepted" icon={<Trophy size={14} style={{ color: ds.severity.high }} />} />
         <StatCard label="Revenue" value={formatEur(data!.totalRevenue)} delta="EUR total" deltaPositive={true} icon={<Euro size={14} style={{ color: ds.accent.default }} />} valueColor={ds.accent.default} />
         <StatCard label="Targets Scanned" value={data!.totalTargets} delta="unique hosts" icon={<Target size={14} style={{ color: ds.severity.info }} />} />
         <StatCard label="Success Rate" value={`${data!.scanSuccessRate}%`} delta="findings → accepted" icon={<Percent size={14} style={{ color: ds.severity.medium }} />} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 16 }}>
         <DSCard style={{ padding: 20 }}>
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: ds.size.sm, fontWeight: ds.weight.semibold, color: ds.text.primary }}>Scans per Month</div>
@@ -506,22 +510,26 @@ function HistoricalContent({ timeRange, setTimeRange, data, loading, error, onRe
             <div style={{ padding: "30px 0", textAlign: "center", color: ds.text.muted, fontSize: ds.size.sm }}>No bounty records yet</div>
           ) : (
             <>
-              <div style={{ display: "grid", gridTemplateColumns: "100px 50px 70px 70px 70px 70px", gap: 4, paddingBottom: 8, borderBottom: `1px solid ${ds.border.default}`, marginBottom: 6 }}>
-                {["Platform", "Scans", "Findings", "Reported", "Accepted", "Bounty"].map((h) => (
-                  <span key={h} style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium, textTransform: "uppercase", letterSpacing: "0.05em", textAlign: h !== "Platform" ? "right" : "left" }}>{h}</span>
-                ))}
-              </div>
+              <div style={{ overflowX: "auto", overflowY: "hidden" }}>
+                <div style={{ minWidth: 450 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "100px 50px 70px 70px 70px 70px", gap: 4, paddingBottom: 8, borderBottom: `1px solid ${ds.border.default}`, marginBottom: 6 }}>
+                    {["Platform", "Scans", "Findings", "Reported", "Accepted", "Bounty"].map((h) => (
+                      <span key={h} style={{ fontSize: ds.size.xs, color: ds.text.muted, fontWeight: ds.weight.medium, textTransform: "uppercase", letterSpacing: "0.05em", textAlign: h !== "Platform" ? "right" : "left" }}>{h}</span>
+                    ))}
+                  </div>
 
-              {data!.platformStats.map((row, i) => (
-                <div key={row.platform} style={{ display: "grid", gridTemplateColumns: "100px 50px 70px 70px 70px 70px", gap: 4, padding: "8px 0", borderBottom: i < data!.platformStats.length - 1 ? `1px solid ${ds.border.default}` : "none", alignItems: "center" }}>
-                  <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.medium, color: ds.text.primary }}>{row.platform}</span>
-                  <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.scans}</span>
-                  <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.findings}</span>
-                  <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.reported}</span>
-                  <span style={{ fontSize: ds.size.xs, color: ds.accent.default, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: ds.weight.medium }}>{row.accepted}</span>
-                  <span style={{ fontSize: ds.size.xs, color: ds.text.primary, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: ds.weight.semibold }}>{formatEur(row.bounty)}</span>
+                  {data!.platformStats.map((row, i) => (
+                    <div key={row.platform} style={{ display: "grid", gridTemplateColumns: "100px 50px 70px 70px 70px 70px", gap: 4, padding: "8px 0", borderBottom: i < data!.platformStats.length - 1 ? `1px solid ${ds.border.default}` : "none", alignItems: "center" }}>
+                      <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.medium, color: ds.text.primary }}>{row.platform}</span>
+                      <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.scans}</span>
+                      <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.findings}</span>
+                      <span style={{ fontSize: ds.size.xs, color: ds.text.muted, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{row.reported}</span>
+                      <span style={{ fontSize: ds.size.xs, color: ds.accent.default, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: ds.weight.medium }}>{row.accepted}</span>
+                      <span style={{ fontSize: ds.size.xs, color: ds.text.primary, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: ds.weight.semibold }}>{formatEur(row.bounty)}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
             </>
           )}
         </DSCard>
