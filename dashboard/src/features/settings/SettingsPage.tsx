@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { Settings, KeyRound, Bell, Code2, ShieldAlert, ChevronRight } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
-import { ToastContainer, useToast } from "./Toast";
+import { ToastContainer, useToast } from "@/components/ds/DSToast";
 import { GeneralTab } from "./GeneralTab";
 import { IntigratiTab } from "./IntigratiTab";
 import { NotificationsTab } from "./NotificationsTab";

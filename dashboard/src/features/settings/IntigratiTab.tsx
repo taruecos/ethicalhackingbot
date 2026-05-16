@@ -20,6 +20,8 @@ const INTERVALS = [
   { value: "daily", label: "Daily" },
 ];
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 function relativeTime(iso: string | null): string {
   if (!iso) return "never";
   const diff = Date.now() - new Date(iso).getTime();
@@ -30,6 +32,22 @@ function relativeTime(iso: string | null): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return `${d}d ago`;
+}
+
+function formatLocalTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const day = String(d.getDate()).padStart(2, "0");
+  const month = MONTHS[d.getMonth()];
+  const year = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const offsetMin = -d.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? "+" : "-";
+  const absMin = Math.abs(offsetMin);
+  const offH = String(Math.floor(absMin / 60)).padStart(2, "0");
+  const offM = String(absMin % 60).padStart(2, "0");
+  return `${day} ${month} ${year}, ${hh}:${mm} (UTC${sign}${offH}:${offM})`;
 }
 
 export function IntigratiTab({ onSave }: IntigratiTabProps) {
@@ -110,7 +128,7 @@ export function IntigratiTab({ onSave }: IntigratiTabProps) {
 
         <SettingsRowLast label="Last sync" hint="Most recent successful synchronization">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: ds.size.xs, fontFamily: "monospace", color: ds.text.muted }}>{lastSyncIso ? new Date(lastSyncIso).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "—"}</span>
+            <span style={{ fontSize: ds.size.xs, fontFamily: "monospace", color: ds.text.muted }}>{lastSyncIso ? formatLocalTimestamp(lastSyncIso) : "—"}</span>
             {lastSyncIso && <StatusBadge type="success" text={relativeTime(lastSyncIso)} />}
           </div>
         </SettingsRowLast>

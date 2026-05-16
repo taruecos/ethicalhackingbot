@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -15,8 +15,11 @@ import {
   ChevronRight,
   Shield,
   ChevronDown,
+  Menu,
+  X,
 } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
+import { CommandPalette } from "@/components/CommandPalette";
 
 const NAV_ITEMS = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -26,12 +29,45 @@ const NAV_ITEMS = [
   { path: "/settings", label: "Settings", icon: Settings },
 ];
 
+const MOBILE_BREAKPOINT = 768;
+
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
+    const sync = () => setIsMobile(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return isMobile;
+}
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [hoveredNav, setHoveredNav] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const pathname = usePathname();
+  const isMobile = useIsMobile();
 
-  const sidebarW = collapsed ? 64 : 240;
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const sidebarW = isMobile ? 260 : collapsed ? 64 : 240;
+  const sidebarVisible = !isMobile || mobileNavOpen;
 
   const isActivePath = (p: string) => pathname === p || pathname.startsWith(p + "/");
 
@@ -42,9 +78,25 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         minHeight: "100vh",
         backgroundColor: ds.bg.base,
         fontFamily: "Inter, sans-serif",
+        position: "relative",
       }}
     >
+      {isMobile && mobileNavOpen && (
+        <div
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 25,
+            backgroundColor: "rgba(0,0,0,0.55)",
+            backdropFilter: "blur(3px)",
+          }}
+        />
+      )}
+
       <aside
+        aria-label="Primary navigation"
         style={{
           width: sidebarW,
           flexShrink: 0,
@@ -52,68 +104,93 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           borderRight: `1px solid ${ds.border.default}`,
           display: "flex",
           flexDirection: "column",
-          position: "sticky",
+          position: isMobile ? "fixed" : "sticky",
           top: 0,
+          left: 0,
           height: "100vh",
           overflow: "hidden",
-          transition: "width 0.2s ease",
-          zIndex: 20,
+          transition: "transform 0.22s ease, width 0.2s ease",
+          transform: sidebarVisible ? "translateX(0)" : "translateX(-100%)",
+          zIndex: 30,
+          boxShadow: isMobile ? "8px 0 32px rgba(0,0,0,0.5)" : "none",
         }}
       >
         <div
           style={{
-            padding: collapsed ? "18px 18px 16px" : "18px 16px 16px",
+            padding: collapsed && !isMobile ? "18px 18px 16px" : "18px 16px 16px",
             borderBottom: `1px solid ${ds.border.default}`,
             display: "flex",
             alignItems: "center",
-            justifyContent: collapsed ? "center" : "flex-start",
+            justifyContent: collapsed && !isMobile ? "center" : "space-between",
             gap: 10,
             minHeight: 64,
           }}
         >
-          <div
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: ds.radius.md,
-              backgroundColor: ds.accent.default,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexShrink: 0,
-            }}
-          >
-            <Shield size={14} style={{ color: "#000" }} />
-          </div>
-          {!collapsed && (
-            <div>
-              <div
-                style={{
-                  fontSize: ds.size.sm,
-                  fontWeight: ds.weight.semibold,
-                  color: ds.text.primary,
-                  lineHeight: 1.2,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                EHB Scanner
-              </div>
-              <div
-                style={{
-                  fontSize: ds.size.xs,
-                  color: ds.text.muted,
-                  lineHeight: 1.3,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                Bug Bounty Platform
-              </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: ds.radius.md,
+                backgroundColor: ds.accent.default,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              <Shield size={14} style={{ color: "#000" }} />
             </div>
+            {(!collapsed || isMobile) && (
+              <div>
+                <div
+                  style={{
+                    fontSize: ds.size.sm,
+                    fontWeight: ds.weight.semibold,
+                    color: ds.text.primary,
+                    lineHeight: 1.2,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  EHB Scanner
+                </div>
+                <div
+                  style={{
+                    fontSize: ds.size.xs,
+                    color: ds.text.muted,
+                    lineHeight: 1.3,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Bug Bounty Platform
+                </div>
+              </div>
+            )}
+          </div>
+          {isMobile && (
+            <button
+              onClick={() => setMobileNavOpen(false)}
+              aria-label="Close navigation"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: ds.radius.md,
+                border: `1px solid ${ds.border.default}`,
+                backgroundColor: "transparent",
+                cursor: "pointer",
+                color: ds.text.muted,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <X size={14} />
+            </button>
           )}
         </div>
 
-        <nav style={{ padding: "10px 8px", flex: 1 }}>
-          {!collapsed && (
+        <nav style={{ padding: "10px 8px", flex: 1, overflowY: "auto" }}>
+          {(!collapsed || isMobile) && (
             <div
               style={{
                 fontSize: ds.size.xs,
@@ -129,18 +206,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           )}
           {NAV_ITEMS.map(({ path, label, icon: Icon }) => {
             const isActive = isActivePath(path);
+            const showLabel = !collapsed || isMobile;
             return (
               <Link
                 key={path}
                 href={path}
-                title={collapsed ? label : undefined}
+                title={!showLabel ? label : undefined}
                 onMouseEnter={() => setHoveredNav(path)}
                 onMouseLeave={() => setHoveredNav(null)}
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  padding: collapsed ? "9px 0" : "7px 8px",
+                  padding: !showLabel ? "9px 0" : "7px 8px",
                   borderRadius: ds.radius.md,
                   fontSize: ds.size.sm,
                   fontWeight: isActive ? ds.weight.medium : ds.weight.regular,
@@ -157,7 +235,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   textDecoration: "none",
                   marginBottom: 2,
                   transition: "all 0.1s ease",
-                  justifyContent: collapsed ? "center" : "space-between",
+                  justifyContent: !showLabel ? "center" : "space-between",
                 }}
               >
                 <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -173,9 +251,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       transition: "color 0.1s ease",
                     }}
                   />
-                  {!collapsed && label}
+                  {showLabel && label}
                 </span>
-                {!collapsed && isActive && (
+                {showLabel && isActive && (
                   <ChevronRight size={11} style={{ color: ds.text.muted }} />
                 )}
               </Link>
@@ -184,7 +262,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </nav>
 
         <div style={{ borderTop: `1px solid ${ds.border.default}`, padding: "8px" }}>
-          {!collapsed ? (
+          {(!collapsed || isMobile) ? (
             <div
               style={{
                 display: "flex",
@@ -262,33 +340,36 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
           )}
 
-          <button
-            onClick={() => setCollapsed(!collapsed)}
-            style={{
-              width: "100%",
-              height: 30,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: collapsed ? "center" : "flex-start",
-              paddingLeft: collapsed ? 0 : 8,
-              gap: 6,
-              borderRadius: ds.radius.md,
-              border: "none",
-              backgroundColor: "transparent",
-              color: ds.text.muted,
-              cursor: "pointer",
-              fontSize: ds.size.xs,
-            }}
-          >
-            {collapsed ? (
-              <ChevronRight size={13} />
-            ) : (
-              <>
-                <ChevronLeft size={13} />
-                <span>Collapse</span>
-              </>
-            )}
-          </button>
+          {!isMobile && (
+            <button
+              onClick={() => setCollapsed(!collapsed)}
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              style={{
+                width: "100%",
+                height: 30,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: collapsed ? "center" : "flex-start",
+                paddingLeft: collapsed ? 0 : 8,
+                gap: 6,
+                borderRadius: ds.radius.md,
+                border: "none",
+                backgroundColor: "transparent",
+                color: ds.text.muted,
+                cursor: "pointer",
+                fontSize: ds.size.xs,
+              }}
+            >
+              {collapsed ? (
+                <ChevronRight size={13} />
+              ) : (
+                <>
+                  <ChevronLeft size={13} />
+                  <span>Collapse</span>
+                </>
+              )}
+            </button>
+          )}
         </div>
       </aside>
 
@@ -300,7 +381,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             borderBottom: `1px solid ${ds.border.default}`,
             display: "flex",
             alignItems: "center",
-            padding: "0 20px",
+            padding: "0 16px",
             gap: 12,
             backgroundColor: ds.bg.surface,
             position: "sticky",
@@ -308,8 +389,32 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             zIndex: 10,
           }}
         >
+          {isMobile && (
+            <button
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="Open navigation"
+              style={{
+                width: 33,
+                height: 33,
+                borderRadius: ds.radius.md,
+                border: `1px solid ${ds.border.default}`,
+                backgroundColor: "transparent",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                color: ds.text.secondary,
+                flexShrink: 0,
+              }}
+            >
+              <Menu size={15} />
+            </button>
+          )}
+
           <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
-            <div
+            <button
+              onClick={() => setPaletteOpen(true)}
+              aria-label="Open command palette"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -321,7 +426,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 backgroundColor: ds.bg.elevated,
                 borderRadius: ds.radius.md,
                 border: `1px solid ${ds.border.default}`,
-                cursor: "text",
+                cursor: "pointer",
+                fontFamily: "Inter, sans-serif",
+                textAlign: "left",
               }}
             >
               <Search size={13} style={{ color: ds.text.muted, flexShrink: 0 }} />
@@ -341,11 +448,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               >
                 ⌘K
               </kbd>
-            </div>
+            </button>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button
+              aria-label="Notifications"
               style={{
                 width: 33,
                 height: 33,
@@ -375,6 +483,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </button>
 
             <div
+              aria-label="Account"
               style={{
                 width: 33,
                 height: 33,
@@ -401,10 +510,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </header>
 
-        <main style={{ flex: 1, overflowY: "auto", padding: 32 }}>
+        <main style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 14px 24px" : 32 }}>
           <div style={{ maxWidth: 1440, margin: "0 auto" }}>{children}</div>
         </main>
       </div>
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>
   );
 }

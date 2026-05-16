@@ -12,8 +12,8 @@ interface DangerZoneTabProps {
   onError: (msg?: string) => void;
 }
 
-const PROJECT_NAME = "ehb-scanner-prod";
-const ACCOUNT_EMAIL = "alex.dupont@ehbsec.io";
+const PROJECT_NAME = "all findings";
+const ACCOUNT_EMAIL = "j.doe@sec.io";
 
 export function DangerZoneTab({ onSave }: DangerZoneTabProps) {
   const [purgeOpen, setPurgeOpen] = useState(false);
