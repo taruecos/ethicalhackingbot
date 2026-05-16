@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { Download, TrendingUp, Clock, CheckCircle2, MoreHorizontal, ExternalLink, AlertCircle } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
+import { triggerDownload } from "@/lib/triggerDownload";
 import type { PayoutStatus, Payout } from "./types";
 
 const STATUS_CFG: Record<PayoutStatus, { label: string; color: string; bg: string }> = {
@@ -96,12 +97,7 @@ export function PayoutsTab() {
     const rows = payouts.map((p) => [p.id, p.program, p.finding, p.amount, p.status, p.awardedAt, p.scanRef]);
     const csv = [headers, ...rows].map((r) => r.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "ehb-payouts.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerDownload(blob, "ehb-payouts.csv");
   };
 
   return (

@@ -6,6 +6,7 @@ import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
 import { DSBadge } from "@/components/ds/DSBadge";
 import { DSDialog } from "@/components/ds/DSDialog";
+import { triggerDownload } from "@/lib/triggerDownload";
 import type { Finding, FindingStatus, Severity } from "./types";
 
 const STATUS_LIST: FindingStatus[] = ["NEW", "CONFIRMED", "FALSE_POSITIVE", "FIXED", "ACCEPTED", "REPORTED"];
@@ -114,14 +115,7 @@ export function FindingDrawer({ finding, onClose, onStatusChange, onDelete }: Fi
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `scan-report-${finding.scanId}.md`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      triggerDownload(blob, `scan-report-${finding.scanId}.md`);
     } catch (e: any) {
       setReportError(e?.message ?? "Failed to generate report");
       setTimeout(() => setReportError(null), 4000);
