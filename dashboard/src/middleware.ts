@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { check as checkRateLimit, clientKeyFromHeaders } from "@/lib/rate-limit";
 
 const MIN_TOKEN_LENGTH = 16;
 
@@ -31,6 +32,43 @@ function redirectToLogin(req: NextRequest) {
   return NextResponse.redirect(url);
 }
 
+/**
+ * Apply per-IP rate limiting for /api/* requests that have already passed auth.
+ * Returns a 429 NextResponse when blocked, or null to let the request proceed.
+ * On success, mutates `next` to add X-RateLimit-* observability headers.
+ */
+function applyApiRateLimit(
+  req: NextRequest,
+  next: NextResponse
+): NextResponse | null {
+  const key = clientKeyFromHeaders(req.headers);
+  const result = checkRateLimit(key);
+
+  if (!result.allowed) {
+    const body = {
+      error: "Rate limit exceeded",
+      retryAfter: result.retryAfterSeconds,
+    };
+    const res = NextResponse.json(body, { status: 429 });
+    res.headers.set("Retry-After", String(result.retryAfterSeconds));
+    res.headers.set("X-RateLimit-Limit", String(result.limit));
+    res.headers.set("X-RateLimit-Remaining", "0");
+    res.headers.set(
+      "X-RateLimit-Reset",
+      String(result.resetAtEpochSeconds)
+    );
+    return res;
+  }
+
+  next.headers.set("X-RateLimit-Limit", String(result.limit));
+  next.headers.set("X-RateLimit-Remaining", String(result.remaining));
+  next.headers.set(
+    "X-RateLimit-Reset",
+    String(result.resetAtEpochSeconds)
+  );
+  return null;
+}
+
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const isApi = pathname.startsWith("/api");
@@ -60,14 +98,18 @@ export function middleware(req: NextRequest) {
       if (!constantTimeEquals(token, expected)) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
       }
-      return NextResponse.next();
+      const next = NextResponse.next();
+      const limited = applyApiRateLimit(req, next);
+      return limited ?? next;
     }
 
     const cookie = req.cookies.get("auth_token")?.value || "";
     if (!constantTimeEquals(cookie, expected)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    return NextResponse.next();
+    const next = NextResponse.next();
+    const limited = applyApiRateLimit(req, next);
+    return limited ?? next;
   }
 
   const cookie = req.cookies.get("auth_token")?.value || "";
