@@ -428,7 +428,7 @@ export function ComposeTab() {
               <AlertCircle size={11} /> {errors.modules}
             </div>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
             {MODULES.map(({ id, label, desc }) => (
               <ModuleCard
                 key={id}

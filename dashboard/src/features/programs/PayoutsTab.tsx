@@ -114,7 +114,7 @@ export function PayoutsTab() {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14, marginBottom: 24 }}>
         <RevenueCard label="Total Revenue" amount={totalAll} sub={`${payouts.length} payouts total`} color={ds.accent.default} icon={<TrendingUp size={14} style={{ color: ds.text.muted }} />} />
         <RevenueCard label="Received" amount={totalPaid} sub={`${payouts.filter((p) => p.status === "paid").length} paid`} color={ds.accent.default} icon={<CheckCircle2 size={14} style={{ color: ds.text.muted }} />} />
         <RevenueCard label="Pending" amount={totalPending} sub={`${payouts.filter((p) => p.status === "pending").length} awaiting`} color={ds.severity.high} icon={<Clock size={14} style={{ color: ds.text.muted }} />} />
@@ -147,7 +147,10 @@ export function PayoutsTab() {
         </DSButton>
       </div>
 
-      <div style={{ backgroundColor: ds.bg.surface, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, overflow: "hidden" }}>
+      <div style={{ backgroundColor: ds.bg.surface, border: `1px solid ${ds.border.default}`, borderRadius: ds.radius.lg, overflowX: "auto", overflowY: "hidden" }}>
+        {/* Inner min-width preserves the grid; the card scrolls horizontally
+            on narrow viewports instead of squashing the cells. */}
+        <div style={{ minWidth: 760 }}>
         <div style={{ display: "grid", gridTemplateColumns: "110px 1fr 140px 100px 90px 90px 36px", gap: 8, padding: "9px 16px", backgroundColor: ds.bg.elevated, borderBottom: `1px solid ${ds.border.default}` }}>
           {["Amount", "Finding", "Program", "Awarded", "Status", "Scan ref", ""].map((h) => (
             <span key={h || "act"} style={{ fontSize: 10, fontWeight: ds.weight.semibold, color: ds.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
@@ -223,6 +226,7 @@ export function PayoutsTab() {
               </span>
             </span>
           </div>
+        </div>
         </div>
       </div>
     </div>

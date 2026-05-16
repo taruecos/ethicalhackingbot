@@ -246,33 +246,37 @@ export function HistoryTab() {
           </div>
         </DSCard>
       ) : (
-        <DSCard style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "200px 110px 130px 80px 1fr 90px 40px", gap: 8, padding: "10px 16px", backgroundColor: ds.bg.elevated, borderBottom: `1px solid ${ds.border.default}` }}>
-            {["Target", "Program", "Started", "Duration", "Findings", "Status", ""].map((h) => (
-              <span key={h || "actions"} style={{ fontSize: 10, fontWeight: ds.weight.semibold, color: ds.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{h}</span>
-            ))}
-          </div>
+        <DSCard style={{ padding: 0, overflowX: "auto", overflowY: "hidden" }}>
+          {/* min-width keeps the grid columns intact and lets the card scroll
+              horizontally on narrow viewports instead of squashing cells. */}
+          <div style={{ minWidth: 820 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "200px 110px 130px 80px 1fr 90px 40px", gap: 8, padding: "10px 16px", backgroundColor: ds.bg.elevated, borderBottom: `1px solid ${ds.border.default}` }}>
+              {["Target", "Program", "Started", "Duration", "Findings", "Status", ""].map((h) => (
+                <span key={h || "actions"} style={{ fontSize: 10, fontWeight: ds.weight.semibold, color: ds.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{h}</span>
+              ))}
+            </div>
 
-          <div>
-            {filtered.map((scan, i) => (
-              <TableRow
-                key={scan.id}
-                scan={scan}
-                programLabel={programLabel(scan.programId)}
-                isLast={i === filtered.length - 1}
-                menuOpen={openMenuId === scan.id}
-                onOpenMenu={() => setOpenMenuId(openMenuId === scan.id ? null : scan.id)}
-                onDeleteRequest={() => setDeleteConfirmId(scan.id)}
-                menuRef={openMenuId === scan.id ? menuRef : null}
-              />
-            ))}
-          </div>
+            <div>
+              {filtered.map((scan, i) => (
+                <TableRow
+                  key={scan.id}
+                  scan={scan}
+                  programLabel={programLabel(scan.programId)}
+                  isLast={i === filtered.length - 1}
+                  menuOpen={openMenuId === scan.id}
+                  onOpenMenu={() => setOpenMenuId(openMenuId === scan.id ? null : scan.id)}
+                  onDeleteRequest={() => setDeleteConfirmId(scan.id)}
+                  menuRef={openMenuId === scan.id ? menuRef : null}
+                />
+              ))}
+            </div>
 
-          <div style={{ padding: "10px 16px", borderTop: `1px solid ${ds.border.default}`, backgroundColor: ds.bg.elevated, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>
-              {filtered.length} scan{filtered.length !== 1 ? "s" : ""} shown
-            </span>
-            <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>Range: {DATE_RANGES.find((r) => r.key === dateRange)?.label}</span>
+            <div style={{ padding: "10px 16px", borderTop: `1px solid ${ds.border.default}`, backgroundColor: ds.bg.elevated, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>
+                {filtered.length} scan{filtered.length !== 1 ? "s" : ""} shown
+              </span>
+              <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>Range: {DATE_RANGES.find((r) => r.key === dateRange)?.label}</span>
+            </div>
           </div>
         </DSCard>
       )}
