@@ -81,6 +81,38 @@ active_scans: dict[str, dict] = {}
 scan_logs: list[dict] = []
 start_time = time.time()
 
+# Terminal states — once a scan reaches one of these, its status must not be
+# overwritten by late worker writes (fixes BUG-103: cancel zombie scans).
+_TERMINAL_STATUSES = {"cancelled", "blocked", "error", "complete"}
+
+
+def safe_set_status(state: dict, new_status: str) -> bool:
+    """Update scan status while respecting terminal states.
+
+    Returns True if the write was applied, False if it was suppressed because
+    the scan is already in a terminal state (e.g., cancelled by the user).
+    The only allowed transitions out of a terminal state are to another
+    terminal state that explicitly records a post-cancel outcome.
+    """
+    current = state.get("status")
+    if current in _TERMINAL_STATUSES:
+        # Allow transitioning from cancelled to a post-cancel terminal record,
+        # but never revive cancelled back to running/phase names.
+        if current == "cancelled" and new_status == "completed_after_cancel":
+            state["status"] = new_status
+            return True
+        return False
+    state["status"] = new_status
+    return True
+
+
+def safe_set_phase(state: dict, phase: str) -> bool:
+    """Update scan phase only if the scan hasn't reached a terminal state."""
+    if state.get("status") in _TERMINAL_STATUSES:
+        return False
+    state["phase"] = phase
+    return True
+
 
 def add_log(level: str, module: str, message: str, scan_id: str | None = None):
     entry = {
@@ -360,8 +392,8 @@ async def _run_scan(req: ScanRequest, state: dict):
     # ═══════════════════════════════════════════
     if req.rules_of_engagement and req.rules_of_engagement.automatedTooling == "not_allowed":
         add_log("CRITICAL", "compliance", "SCAN BLOCKED — automated tooling is NOT ALLOWED by this program", req.scan_id)
-        state["status"] = "blocked"
-        state["phase"] = "compliance_blocked"
+        safe_set_status(state, "blocked")
+        safe_set_phase(state, "compliance_blocked")
         state["progress"] = 0
         await _notify_dashboard(req, state, "error")
         return
@@ -384,8 +416,8 @@ async def _run_scan(req: ScanRequest, state: dict):
     # ═══════════════════════════════════════════
     if not req.rules_of_engagement or not req.rules_of_engagement.safeHarbour:
         add_log("CRITICAL", "compliance", "BLOCKED: No safe harbour protection — scan aborted. Cannot proceed without legal safe harbour.", req.scan_id)
-        state["status"] = "blocked"
-        state["phase"] = "compliance"
+        safe_set_status(state, "blocked")
+        safe_set_phase(state, "compliance")
         state["error"] = "No safe harbour protection. Scan blocked for legal safety."
         await _notify_dashboard(req, state, "error")
         return
@@ -476,7 +508,7 @@ async def _run_scan(req: ScanRequest, state: dict):
             from types import SimpleNamespace
             endpoints = [SimpleNamespace(url=ep["url"], method=ep.get("method", "GET"), params=ep.get("params", [])) for ep in req.resume.endpoints]
 
-            state["phase"] = "scan"
+            safe_set_phase(state, "scan")
             state["endpoints_total"] = len(endpoints)
             state["progress"] = 15
             state["modules_done"] = resume_module
@@ -487,7 +519,7 @@ async def _run_scan(req: ScanRequest, state: dict):
             req.resume = None  # Reset so crawl logic runs normally
         else:
             # Normal crawl
-            state["phase"] = "recon"
+            safe_set_phase(state, "recon")
             state["progress"] = 5
             state["current_module"] = "crawler"
 
@@ -512,7 +544,7 @@ async def _run_scan(req: ScanRequest, state: dict):
 
             if not seed_urls:
                 add_log("CRITICAL", "recon", "No valid seed URLs — cannot crawl", req.scan_id)
-                state["status"] = "error"
+                safe_set_status(state, "error")
                 state["error"] = "No valid seed URLs to crawl"
                 await _notify_dashboard(req, state, "error")
                 return
@@ -572,8 +604,8 @@ async def _run_scan(req: ScanRequest, state: dict):
 
             if not endpoints:
                 add_log("WARN", "recon", "No endpoints found in scope — scan complete", req.scan_id)
-                state["status"] = "complete"
-                state["phase"] = "report"
+                safe_set_status(state, "complete")
+                safe_set_phase(state, "report")
                 state["progress"] = 100
                 await _notify_dashboard(req, state, "complete")
                 return
@@ -581,7 +613,7 @@ async def _run_scan(req: ScanRequest, state: dict):
             # ═══════════════════════════════════════════
             # Phase 2: Scanning
             # ═══════════════════════════════════════════
-            state["phase"] = "scan"
+            safe_set_phase(state, "scan")
             state["progress"] = 20
             await _notify_dashboard(req, state)
 
@@ -1088,8 +1120,15 @@ async def _run_scan(req: ScanRequest, state: dict):
         # ═══════════════════════════════════════════
         # Phase 3: Report
         # ═══════════════════════════════════════════
+        # If the scan was cancelled during the last module, do not enter the
+        # report phase — a late phase write here would mask the cancelled state
+        # for the dashboard.
+        if state.get("status") == "cancelled":
+            await _notify_dashboard(req, state, "cancelled")
+            return
+
         report_start_ts = time.time()
-        state["phase"] = "report"
+        safe_set_phase(state, "report")
         state["current_module"] = "report"
         state["progress"] = 95
         add_log("INFO", "report", f"Generating scan report — {len(findings)} total findings", req.scan_id)
@@ -1137,15 +1176,23 @@ async def _run_scan(req: ScanRequest, state: dict):
         add_log("INFO", "report", f"Markdown report saved: {md_path}", req.scan_id)
 
         state["progress"] = 100
-        state["status"] = "complete"
         state["findings"] = findings
+        # safe_set_status will refuse to overwrite a cancelled/blocked terminal
+        # state — this is what prevents the "cancel zombie" bug where a late
+        # worker write would resurrect a user-cancelled scan as "complete".
+        applied = safe_set_status(state, "complete")
         _record_phase("report", report_start_ts, len(findings))
-        add_log("INFO", "scan", f"SCAN COMPLETE — {len(findings)} findings in {int(time.time() - state['start_time'])}s", req.scan_id)
-
-        await _notify_dashboard(req, state, "complete")
+        if applied:
+            add_log("INFO", "scan", f"SCAN COMPLETE — {len(findings)} findings in {int(time.time() - state['start_time'])}s", req.scan_id)
+            await _notify_dashboard(req, state, "complete")
+        else:
+            add_log("INFO", "scan", f"Scan reached report phase but terminal status is {state.get('status')!r} — not overwriting", req.scan_id)
+            await _notify_dashboard(req, state, state.get("status", "complete"))
 
     except Exception as e:
-        state["status"] = "error"
+        # Don't overwrite a cancelled/blocked terminal state with "error" just
+        # because a downstream call raised after cancellation.
+        safe_set_status(state, "error")
         state["error"] = str(e)
         add_log("ERROR", "scan", f"Scan failed: {e}", req.scan_id)
         await _notify_dashboard(req, state, "error")
