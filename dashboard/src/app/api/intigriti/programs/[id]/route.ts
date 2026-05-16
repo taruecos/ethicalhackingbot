@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getProgramDetail } from "@/lib/intigriti";
+import { parseIdParam } from "@/lib/validation";
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idCheck = parseIdParam(rawId);
+  if (!idCheck.ok) return idCheck.response;
+  const { id } = idCheck;
+
   try {
     const data = await getProgramDetail(id);
     return NextResponse.json(data);

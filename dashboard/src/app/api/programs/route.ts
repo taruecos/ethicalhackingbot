@@ -1,16 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { parseSearchParams } from "@/lib/validation";
+
+const SORT_BY_VALUES = ["syncedAt", "maxBounty", "name"] as const;
+const SORT_DIR_VALUES = ["asc", "desc"] as const;
+const BOOL_VALUES = ["true", "false"] as const;
+
+const programsQuerySchema = z
+  .object({
+    compliant: z.enum(BOOL_VALUES).optional(),
+    search: z.string().min(1).max(256).optional(),
+    limit: z
+      .string()
+      .regex(/^\d+$/, "limit must be a positive integer")
+      .transform((v) => Number(v))
+      .refine((n) => n > 0 && n <= 5000, "limit must be between 1 and 5000")
+      .optional(),
+    industry: z.string().min(1).max(128).optional(),
+    hasBounty: z.enum(BOOL_VALUES).optional(),
+    confidentiality: z.string().min(1).max(64).optional(),
+    sortBy: z.enum(SORT_BY_VALUES).optional(),
+    sortDir: z.enum(SORT_DIR_VALUES).optional(),
+  })
+  .strict();
 
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const compliant = searchParams.get("compliant");
-  const search = searchParams.get("search");
-  const limit = Number(searchParams.get("limit") || "500");
-  const industry = searchParams.get("industry");
-  const hasBounty = searchParams.get("hasBounty");
-  const confidentiality = searchParams.get("confidentiality");
-  const sortBy = searchParams.get("sortBy") || "syncedAt";
-  const sortDir = searchParams.get("sortDir") || "desc";
+  const parsed = parseSearchParams(req.nextUrl.searchParams, programsQuerySchema);
+  if (!parsed.ok) return parsed.response;
+  const {
+    compliant,
+    search,
+    limit = 500,
+    industry,
+    hasBounty,
+    confidentiality,
+    sortBy = "syncedAt",
+    sortDir = "desc",
+  } = parsed.data;
 
   const where: Record<string, unknown> = {};
 

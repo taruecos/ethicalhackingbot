@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { verifyBearer } from "@/lib/auth";
+import { parseIdParam } from "@/lib/validation";
 
 /**
  * Save/update scan checkpoint (called by Python scanner after each module).
@@ -9,7 +10,10 @@ import { verifyBearer } from "@/lib/auth";
  * Also: GET to retrieve last checkpoint (for resume).
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idCheck = parseIdParam(rawId);
+  if (!idCheck.ok) return idCheck.response;
+  const { id } = idCheck;
 
   if (!verifyBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -50,7 +54,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idCheck = parseIdParam(rawId);
+  if (!idCheck.ok) return idCheck.response;
+  const { id } = idCheck;
 
   const checkpoint = await prisma.scanCheckpoint.findUnique({
     where: { scanId: id },

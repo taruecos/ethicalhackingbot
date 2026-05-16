@@ -1,8 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { parseSearchParams } from "@/lib/validation";
+
+const querySchema = z
+  .object({
+    range: z.enum(["all", "7d", "30d", "90d"]).optional(),
+  })
+  .strict();
 
 export async function GET(req: NextRequest) {
-  const range = req.nextUrl.searchParams.get("range") || "all";
+  const parsed = parseSearchParams(req.nextUrl.searchParams, querySchema);
+  if (!parsed.ok) return parsed.response;
+  const range = parsed.data.range || "all";
 
   // Calculate date filter
   let dateFilter: Date | undefined;

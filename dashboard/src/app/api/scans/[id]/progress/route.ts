@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma, ScanStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { verifyBearer } from "@/lib/auth";
+import { parseIdParam } from "@/lib/validation";
 
 // Scanner sends lowercase status strings ("running", "complete", "error",
 // "cancelled", "blocked"). Prisma enum requires uppercase. Map at the boundary.
@@ -31,7 +32,10 @@ function normalizeStatus(raw: unknown): ScanStatus | null {
  * PATCH /api/scans/:id/progress
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idCheck = parseIdParam(rawId);
+  if (!idCheck.ok) return idCheck.response;
+  const { id } = idCheck;
 
   if (!verifyBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
