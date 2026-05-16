@@ -40,12 +40,16 @@ const STATUS_CONFIG: Record<HistoryStatus, { label: string; color: string; bg: s
   CANCELLED: { label: "Cancelled", color: ds.text.muted, bg: "rgba(113,113,122,0.12)" },
 };
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 function formatStarted(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
-  const date = d.toISOString().slice(0, 10);
+  if (isNaN(d.getTime())) return "—";
+  const day = String(d.getDate()).padStart(2, "0");
+  const month = MONTHS[d.getMonth()];
   const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return `${date} ${time}`;
+  return `${day} ${month} ${time}`;
 }
 
 function formatDuration(startedAt: string | null, finishedAt: string | null): string {
@@ -315,7 +319,13 @@ function TableRow({ scan, programLabel, isLast, menuOpen, onOpenMenu, onDeleteRe
 
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
         {totalFindings === 0 ? (
-          <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>—</span>
+          (scan._count?.findings ?? 0) > 0 ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "1px 6px", borderRadius: ds.radius.md, fontSize: 10, fontWeight: ds.weight.semibold, backgroundColor: ds.bg.elevated, color: ds.text.secondary, border: `1px solid ${ds.border.default}` }}>
+              {scan._count?.findings}
+            </span>
+          ) : (
+            <span style={{ fontSize: ds.size.xs, color: ds.text.muted }}>{scan.status === "COMPLETE" ? "0" : "—"}</span>
+          )
         ) : (
           Object.entries(findings)
             .filter(([, n]) => n > 0)

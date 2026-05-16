@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Copy, Check, Trash2, Plus, Key, ExternalLink } from "lucide-react";
+import { Copy, Check, Trash2, Plus, Key, ExternalLink, AlertCircle } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
 import { DSDialog } from "@/components/ds/DSDialog";
@@ -46,6 +46,8 @@ export function ApiTab({ onSave, onError }: ApiTabProps) {
   const [creating, setCreating] = useState(false);
   const [newTokenVal, setNewTokenVal] = useState<string | null>(null);
   const [tokenCopied, setTCopied] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [scopesError, setScopesError] = useState<string | null>(null);
 
   const copyWebhook = () => {
     navigator.clipboard.writeText(webhookUrl);
@@ -61,23 +63,37 @@ export function ApiTab({ onSave, onError }: ApiTabProps) {
   };
 
   const createToken = () => {
-    if (!newName.trim()) {
-      onError("Token name is required");
-      return;
-    }
-    if (newScopes.size === 0) {
-      onError("Select at least one scope");
+    const trimmed = newName.trim();
+    const errors: { name?: string; scopes?: string } = {};
+    if (!trimmed) errors.name = "Token name is required";
+    else if (trimmed.length < 3) errors.name = "Token name must be at least 3 characters";
+    if (newScopes.size === 0) errors.scopes = "Select at least one scope";
+    setNameError(errors.name ?? null);
+    setScopesError(errors.scopes ?? null);
+    if (errors.name || errors.scopes) {
+      onError(errors.name ?? errors.scopes ?? "Form incomplete");
       return;
     }
     setCreating(true);
     setTimeout(() => {
       const id = `t${Date.now()}`;
       const val = `ehb_live_${Math.random().toString(36).slice(2, 14)}`;
-      const token = { id, name: newName, created: new Date().toISOString().slice(0, 10), lastUsed: null, scopes: [...newScopes], prefix: val.slice(0, 13) };
+      const token = { id, name: trimmed, created: new Date().toISOString().slice(0, 10), lastUsed: null, scopes: [...newScopes], prefix: val.slice(0, 13) };
       setTokens((prev) => [token, ...prev]);
       setNewTokenVal(val);
       setCreating(false);
+      onSave(`Token "${trimmed}" created`);
     }, 900);
+  };
+
+  const handleNameChange = (v: string) => {
+    setNewName(v);
+    if (nameError) setNameError(null);
+  };
+
+  const handleScopeToggle = (key: string) => {
+    toggleScope(key);
+    if (scopesError) setScopesError(null);
   };
 
   const closeCreate = () => {
@@ -86,6 +102,8 @@ export function ApiTab({ onSave, onError }: ApiTabProps) {
     setNewScopes(new Set(["read:findings"]));
     setNewTokenVal(null);
     setTCopied(false);
+    setNameError(null);
+    setScopesError(null);
   };
 
   const toggleScope = (key: string) => {
@@ -237,16 +255,28 @@ export function ApiTab({ onSave, onError }: ApiTabProps) {
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div>
               <label style={{ display: "block", fontSize: 10, color: ds.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Token name</label>
-              <FormInput value={newName} onChange={setNewName} placeholder="e.g. GitHub Actions, Zapier integration…" />
+              <FormInput value={newName} onChange={handleNameChange} placeholder="e.g. GitHub Actions, Zapier integration…" />
+              {nameError && (
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 6, fontSize: ds.size.xs, color: ds.severity.critical }}>
+                  <AlertCircle size={11} />
+                  {nameError}
+                </div>
+              )}
             </div>
             <div>
               <label style={{ display: "block", fontSize: 10, color: ds.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Scopes</label>
+              {scopesError && (
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 8, fontSize: ds.size.xs, color: ds.severity.critical }}>
+                  <AlertCircle size={11} />
+                  {scopesError}
+                </div>
+              )}
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {ALL_SCOPES.map((s) => (
                   <label
                     key={s.key}
                     style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 10px", cursor: "pointer", borderRadius: ds.radius.md, backgroundColor: newScopes.has(s.key) ? (s.key === "*" ? ds.severity.highBg : ds.accent.bg15) : ds.bg.elevated, border: `1px solid ${newScopes.has(s.key) ? (s.key === "*" ? `${ds.severity.high}40` : ds.border.accent20) : ds.border.default}` }}
-                    onClick={() => toggleScope(s.key)}
+                    onClick={() => handleScopeToggle(s.key)}
                   >
                     <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, marginTop: 1, backgroundColor: newScopes.has(s.key) ? (s.key === "*" ? ds.severity.high : ds.accent.default) : "transparent", border: `1.5px solid ${newScopes.has(s.key) ? (s.key === "*" ? ds.severity.high : ds.accent.default) : "rgba(113,113,122,0.4)"}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
                       {newScopes.has(s.key) && (

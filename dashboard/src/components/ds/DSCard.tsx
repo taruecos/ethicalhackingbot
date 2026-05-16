@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { forwardRef, useState } from 'react';
 import { ds } from './tokens';
 
 export type CardVariant = 'default' | 'hover' | 'selected';
@@ -12,7 +12,10 @@ interface DSCardProps {
   style?: React.CSSProperties;
 }
 
-export function DSCard({ forceVariant, children, onClick, style: styleProp }: DSCardProps) {
+export const DSCard = forwardRef<HTMLDivElement, DSCardProps>(function DSCard(
+  { forceVariant, children, onClick, style: styleProp },
+  ref,
+) {
   const [isHovered, setIsHovered] = useState(false);
 
   const variant: CardVariant = forceVariant ?? (isHovered ? 'hover' : 'default');
@@ -31,6 +34,7 @@ export function DSCard({ forceVariant, children, onClick, style: styleProp }: DS
 
   return (
     <div
+      ref={ref}
       style={{
         backgroundColor: ds.bg.surface,
         border: getBorder(),
@@ -49,4 +53,4 @@ export function DSCard({ forceVariant, children, onClick, style: styleProp }: DS
       {children}
     </div>
   );
-}
+});

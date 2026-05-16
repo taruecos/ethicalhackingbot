@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Plus,
   Trash2,
@@ -15,6 +15,7 @@ import {
 import { ds } from "@/components/ds/tokens";
 import { DSCard } from "@/components/ds/DSCard";
 import { DSButton } from "@/components/ds/DSButton";
+import { ToastContainer, useToast } from "@/components/ds/DSToast";
 
 type ComplianceStatus = "ok" | "forbidden" | "conditional" | "unknown";
 type ScopeEntryType = "wildcard" | "exact" | "ip";
@@ -54,7 +55,7 @@ const COMPLIANCE_CONFIG: Record<ComplianceStatus, { label: string; color: string
   ok: { label: "Automated OK", color: ds.accent.default, bg: ds.accent.bg15, icon: <CheckCircle2 size={13} /> },
   forbidden: { label: "Automated tooling not allowed", color: ds.severity.critical, bg: ds.severity.criticalBg, icon: <AlertCircle size={13} /> },
   conditional: { label: "Conditional — read rules carefully", color: ds.severity.high, bg: ds.severity.highBg, icon: <AlertTriangle size={13} /> },
-  unknown: { label: "Unknown — select a program", color: ds.text.muted, bg: "rgba(113,113,122,0.1)", icon: <HelpCircle size={13} /> },
+  unknown: { label: "Custom target — no program compliance check", color: ds.text.muted, bg: "rgba(113,113,122,0.1)", icon: <HelpCircle size={13} /> },
 };
 
 function mapAutomatedStatus(prog: ApiProgram | null): ComplianceStatus {
@@ -150,6 +151,8 @@ function InlineInput({ value, onChange, placeholder, disabled, error, prefix }: 
   );
 }
 
+const INITIAL_MODULES = ["sqli", "xss", "ssrf", "idor"];
+
 export function ComposeTab() {
   const [programs, setPrograms] = useState<ApiProgram[]>([]);
   const [programsLoading, setProgramsLoading] = useState(true);
@@ -157,7 +160,7 @@ export function ComposeTab() {
   const [selectedProgramId, setSelectedProgramId] = useState("");
   const [useProgramScope, setUseProgramScope] = useState(false);
   const [scopeEntries, setScopeEntries] = useState<ScopeEntry[]>([{ id: "1", url: "", type: "wildcard" }]);
-  const [checkedModules, setCheckedModules] = useState<Set<string>>(new Set(["sqli", "xss", "ssrf", "idor"]));
+  const [checkedModules, setCheckedModules] = useState<Set<string>>(new Set(INITIAL_MODULES));
   const [depth, setDepth] = useState<Depth>("standard");
   const [rateLimit, setRateLimit] = useState(30);
   const [safeHarbourChecked, setSafeHarbourChecked] = useState(false);
@@ -166,6 +169,11 @@ export function ComposeTab() {
   const [launchSuccess, setLaunchSuccess] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [tooltipOpen, setTooltipOpen] = useState(false);
+  const targetRef = useRef<HTMLDivElement>(null);
+  const scopeRef = useRef<HTMLDivElement>(null);
+  const modulesRef = useRef<HTMLDivElement>(null);
+  const complianceRef = useRef<HTMLDivElement>(null);
+  const toast = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -224,9 +232,43 @@ export function ComposeTab() {
     }
   };
 
+  const scrollToFirstError = () => {
+    const order: Array<{ key: keyof typeof errors; ref: React.RefObject<HTMLDivElement | null> }> = [
+      { key: "domain", ref: targetRef },
+      { key: "scope", ref: scopeRef },
+      { key: "modules", ref: modulesRef },
+      { key: "safeHarbour", ref: complianceRef },
+    ];
+    for (const { key, ref } of order) {
+      if (errors[key] && ref.current) {
+        ref.current.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+    }
+    if (isComplianceBlocked && complianceRef.current) {
+      complianceRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  };
+
+  const resetForm = () => {
+    setDomain("");
+    setSelectedProgramId("");
+    setUseProgramScope(false);
+    setScopeEntries([{ id: "1", url: "", type: "wildcard" }]);
+    setCheckedModules(new Set(INITIAL_MODULES));
+    setDepth("standard");
+    setRateLimit(30);
+    setSafeHarbourChecked(false);
+    setTouched(false);
+  };
+
   const handleLaunch = async () => {
     setTouched(true);
-    if (!isValid) return;
+    if (!isValid) {
+      requestAnimationFrame(scrollToFirstError);
+      toast.show("Fix the highlighted fields before launching", "error");
+      return;
+    }
     setLaunching(true);
     setLaunchError(null);
     try {
@@ -253,9 +295,13 @@ export function ComposeTab() {
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       setLaunchSuccess(true);
-      setTimeout(() => setLaunchSuccess(false), 3000);
+      toast.show(`Scan queued for ${domain || "target"} — view it in the Active tab`, "success");
+      resetForm();
+      setTimeout(() => setLaunchSuccess(false), 4000);
     } catch (e: any) {
-      setLaunchError(e?.message ?? "Failed to queue scan");
+      const msg = e?.message ?? "Failed to queue scan";
+      setLaunchError(msg);
+      toast.show(msg, "error");
     } finally {
       setLaunching(false);
     }
@@ -285,8 +331,16 @@ export function ComposeTab() {
 
   return (
     <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
-      <div style={{ flex: 2, display: "flex", flexDirection: "column", gap: 14 }}>
-        <DSCard style={{ padding: 20 }}>
+      <div style={{ flex: 2, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+        {launchSuccess && (
+          <div role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: ds.radius.md, backgroundColor: ds.accent.bg15, border: `1px solid ${ds.accent.default}40` }}>
+            <CheckCircle2 size={16} style={{ color: ds.accent.default, flexShrink: 0 }} />
+            <span style={{ fontSize: ds.size.sm, color: ds.text.primary, fontWeight: ds.weight.medium }}>
+              Scan queued — track its progress in the Active tab.
+            </span>
+          </div>
+        )}
+        <DSCard style={{ padding: 20 }} ref={targetRef}>
           <SectionHeader label="Target" required />
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <InlineInput value={domain} onChange={setDomain} placeholder="api.example.com" prefix="https://" error={touched && errors.domain ? errors.domain : undefined} />
@@ -315,7 +369,7 @@ export function ComposeTab() {
           </div>
         </DSCard>
 
-        <DSCard style={{ padding: 20, opacity: useProgramScope ? 0.6 : 1, transition: "opacity 0.2s" }}>
+        <DSCard ref={scopeRef} style={{ padding: 20, opacity: useProgramScope ? 0.6 : 1, transition: "opacity 0.2s" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
             <SectionHeader label="Scope Entries" required />
             <DSButton variant="secondary" size="sm" icon={<Plus size={12} />} onClick={addScopeEntry} style={{ pointerEvents: useProgramScope ? "none" : "auto" }}>
@@ -367,7 +421,7 @@ export function ComposeTab() {
           </div>
         </DSCard>
 
-        <DSCard style={{ padding: 20 }}>
+        <DSCard ref={modulesRef} style={{ padding: 20 }}>
           <SectionHeader label="Modules" required />
           {touched && errors.modules && (
             <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 10, fontSize: ds.size.xs, color: ds.severity.critical }}>
@@ -441,10 +495,23 @@ export function ComposeTab() {
           </div>
         </DSCard>
 
-        <DSCard forceVariant={isComplianceBlocked ? undefined : "selected"} style={{ padding: 20, border: `1px solid ${isComplianceBlocked ? ds.severity.critical : ds.accent.default}` }}>
+        <DSCard
+          ref={complianceRef}
+          forceVariant={isComplianceBlocked || complianceStatus === "unknown" ? undefined : "selected"}
+          style={{
+            padding: 20,
+            border: `1px solid ${
+              isComplianceBlocked
+                ? ds.severity.critical
+                : complianceStatus === "unknown"
+                ? ds.border.default
+                : ds.accent.default
+            }`,
+          }}
+        >
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 16 }}>
-            <Lock size={13} style={{ color: isComplianceBlocked ? ds.severity.critical : ds.accent.default }} />
-            <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: isComplianceBlocked ? ds.severity.critical : ds.accent.default, textTransform: "uppercase", letterSpacing: "0.07em" }}>Compliance Gate</span>
+            <Lock size={13} style={{ color: isComplianceBlocked ? ds.severity.critical : complianceStatus === "unknown" ? ds.text.muted : ds.accent.default }} />
+            <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: isComplianceBlocked ? ds.severity.critical : complianceStatus === "unknown" ? ds.text.secondary : ds.accent.default, textTransform: "uppercase", letterSpacing: "0.07em" }}>Compliance Gate</span>
           </div>
 
           <div style={{ marginBottom: 16 }}>
@@ -585,6 +652,7 @@ export function ComposeTab() {
           </>
         )}
       </div>
+      <ToastContainer items={toast.items} onDismiss={toast.dismiss} />
     </div>
   );
 }

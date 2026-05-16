@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { X, Copy, Check, ChevronDown, CheckCircle2, XCircle, FileText, Trash2, ScanLine, ExternalLink } from "lucide-react";
+import { X, Copy, Check, ChevronDown, CheckCircle2, XCircle, FileText, Trash2, ScanLine, ExternalLink, Loader2 } from "lucide-react";
 import { ds } from "@/components/ds/tokens";
 import { DSButton } from "@/components/ds/DSButton";
 import { DSBadge } from "@/components/ds/DSBadge";
@@ -97,7 +97,38 @@ export function FindingDrawer({ finding, onClose, onStatusChange, onDelete }: Fi
   const [visible, setVisible] = useState(false);
   const [notes, setNotes] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
   const prevId = useRef<string | null>(null);
+
+  const handleGenerateReport = async () => {
+    if (!finding) return;
+    setReportLoading(true);
+    setReportError(null);
+    try {
+      const res = await fetch(`/api/scans/${finding.scanId}/report?format=markdown`, {
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `scan-report-${finding.scanId}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e: any) {
+      setReportError(e?.message ?? "Failed to generate report");
+      setTimeout(() => setReportError(null), 4000);
+    } finally {
+      setReportLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (finding) {
@@ -151,7 +182,7 @@ export function FindingDrawer({ finding, onClose, onStatusChange, onDelete }: Fi
                   <span style={{ fontSize: ds.size.xs, fontWeight: ds.weight.semibold, color: finding.confidence === "high" ? ds.accent.default : finding.confidence === "medium" ? ds.severity.high : ds.text.muted, textTransform: "capitalize" }}>{finding.confidence}</span>
                 </MetaCell>
                 <MetaCell label="First Seen">
-                  <span style={{ fontSize: ds.size.xs, color: ds.text.secondary, fontFamily: "monospace" }}>{new Date(finding.firstSeen).toLocaleString("en-GB")}</span>
+                  <span style={{ fontSize: ds.size.xs, color: ds.text.secondary, fontFamily: "monospace" }}>{formatFirstSeen(finding.firstSeen)}</span>
                 </MetaCell>
                 <MetaCell label="Scan" noBorder>
                   <a href={`/scans?id=${finding.scanId}`} style={{ fontSize: ds.size.xs, color: ds.severity.info, textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
@@ -188,13 +219,24 @@ export function FindingDrawer({ finding, onClose, onStatusChange, onDelete }: Fi
           <DSButton variant="secondary" size="md" icon={<XCircle size={14} />} onClick={() => onStatusChange(finding.id, "FALSE_POSITIVE")}>
             Mark False Positive
           </DSButton>
-          <DSButton variant="ghost" size="md" icon={<FileText size={14} />}>
-            Generate Report
+          <DSButton
+            variant="ghost"
+            size="md"
+            icon={reportLoading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+            onClick={handleGenerateReport}
+            forceState={reportLoading ? "loading" : undefined}
+          >
+            {reportLoading ? "Generating…" : "Generate Report"}
           </DSButton>
           <DSButton variant="ghost" size="md" icon={<Trash2 size={14} />} onClick={() => setDeleteConfirm(true)} style={{ marginLeft: "auto", color: ds.severity.critical }}>
             Delete
           </DSButton>
         </div>
+        {reportError && (
+          <div role="alert" style={{ position: "absolute", bottom: 70, left: 20, right: 20, padding: "10px 14px", backgroundColor: ds.severity.criticalBg, border: `1px solid ${ds.severity.critical}40`, borderRadius: ds.radius.md, fontSize: ds.size.xs, color: ds.severity.critical, display: "flex", alignItems: "center", gap: 8 }}>
+            <XCircle size={14} /> {reportError}
+          </div>
+        )}
       </div>
 
       <DSDialog
@@ -227,6 +269,18 @@ export function FindingDrawer({ finding, onClose, onStatusChange, onDelete }: Fi
       </DSDialog>
     </>
   );
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function formatFirstSeen(iso: string | Date): string {
+  const d = typeof iso === "string" ? new Date(iso) : iso;
+  if (isNaN(d.getTime())) return "—";
+  const day = d.getDate();
+  const month = MONTHS[d.getMonth()];
+  const year = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${day} ${month} ${year}, ${hh}:${mm}`;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
