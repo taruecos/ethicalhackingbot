@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { parseIdParam, parseSearchParams } from "@/lib/validation";
+
+const reportQuerySchema = z
+  .object({
+    format: z.enum(["json", "markdown"]).optional(),
+  })
+  .strict();
 
 /**
  * Generate a scan report with findings and stats.
@@ -8,7 +16,13 @@ import { prisma } from "@/lib/db";
  *   format=json (default) | markdown
  */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idCheck = parseIdParam(rawId);
+  if (!idCheck.ok) return idCheck.response;
+  const { id } = idCheck;
+
+  const parsedQuery = parseSearchParams(req.nextUrl.searchParams, reportQuerySchema);
+  if (!parsedQuery.ok) return parsedQuery.response;
 
   const scan = await prisma.scan.findUnique({
     where: { id },
@@ -67,7 +81,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     })),
   };
 
-  const format = req.nextUrl.searchParams.get("format") || "json";
+  const format = parsedQuery.data.format || "json";
 
   if (format === "markdown") {
     const lines = [

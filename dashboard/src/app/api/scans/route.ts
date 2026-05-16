@@ -1,11 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { parseSearchParams } from "@/lib/validation";
 
-const scanServiceUrl = process.env.SCAN_SERVICE_URL || "http://localhost:8000";
+const SCAN_STATUS_VALUES = [
+  "QUEUED",
+  "RUNNING",
+  "COMPLETE",
+  "ERROR",
+  "CANCELLED",
+] as const;
+
+const scansQuerySchema = z
+  .object({
+    status: z.enum(SCAN_STATUS_VALUES).optional(),
+  })
+  .strict();
 
 export async function GET(req: NextRequest) {
-  const status = req.nextUrl.searchParams.get("status");
-  const where = status ? { status: status as "QUEUED" | "RUNNING" | "COMPLETE" | "ERROR" | "CANCELLED" } : {};
+  const parsed = parseSearchParams(req.nextUrl.searchParams, scansQuerySchema);
+  if (!parsed.ok) return parsed.response;
+  const { status } = parsed.data;
+
+  const where = status ? { status } : {};
 
   const scans = await prisma.scan.findMany({
     where,

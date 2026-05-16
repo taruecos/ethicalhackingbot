@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { parseIdParam } from "@/lib/validation";
 
 /**
  * Relaunch a scan that is COMPLETE, ERROR, or CANCELLED.
@@ -10,7 +11,10 @@ import { prisma } from "@/lib/db";
  * - resume: false/omitted → create a fresh new QUEUED scan with same config
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idCheck = parseIdParam(rawId);
+  if (!idCheck.ok) return idCheck.response;
+  const { id } = idCheck;
 
   const scan = await prisma.scan.findUnique({
     where: { id },

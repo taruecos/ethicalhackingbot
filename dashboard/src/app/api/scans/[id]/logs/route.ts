@@ -1,8 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { verifyBearer } from "@/lib/auth";
+import { parseIdParam, parseSearchParams } from "@/lib/validation";
 
 const VALID_LEVELS = new Set(["INFO", "WARN", "ERROR", "DEBUG", "CRITICAL"]);
+
+const logsQuerySchema = z
+  .object({
+    after: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z0-9_-]+$/, "invalid cursor id")
+      .optional(),
+    limit: z
+      .string()
+      .regex(/^\d+$/, "limit must be a positive integer")
+      .optional(),
+  })
+  .strict();
 const MAX_BATCH = 500;
 const MAX_MESSAGE_LEN = 4000;
 
@@ -19,7 +36,10 @@ type IncomingLog = {
  * Body: { logs: [{ level, module, message, timestamp? }] }
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idCheck = parseIdParam(rawId);
+  if (!idCheck.ok) return idCheck.response;
+  const { id } = idCheck;
 
   if (!verifyBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -74,11 +94,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
  * GET /api/scans/:id/logs?after=<logId>&limit=<n>
  */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idCheck = parseIdParam(rawId);
+  if (!idCheck.ok) return idCheck.response;
+  const { id } = idCheck;
 
-  const url = new URL(req.url);
-  const after = url.searchParams.get("after");
-  const limitRaw = parseInt(url.searchParams.get("limit") || "500", 10);
+  const parsedQuery = parseSearchParams(req.nextUrl.searchParams, logsQuerySchema);
+  if (!parsedQuery.ok) return parsedQuery.response;
+  const { after, limit: limitStr } = parsedQuery.data;
+  const limitRaw = limitStr ? parseInt(limitStr, 10) : 500;
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 1000) : 500;
 
   let afterCreatedAt: Date | null = null;

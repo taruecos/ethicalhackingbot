@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { parseIdParam } from "@/lib/validation";
 
 interface ScopeEntry {
   endpoint: string;
@@ -50,7 +51,10 @@ const MODULE_DESCRIPTIONS: Record<string, string> = {
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const { id } = await params;
+    const { id: rawId } = await params;
+    const idCheck = parseIdParam(rawId);
+    if (!idCheck.ok) return idCheck.response;
+    const { id } = idCheck;
 
     const scan = await prisma.scan.findUnique({
       where: { id },

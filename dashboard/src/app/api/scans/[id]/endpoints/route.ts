@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { verifyBearer } from "@/lib/auth";
+import { parseIdParam } from "@/lib/validation";
 
 /**
  * Save crawled endpoints for a scan (called by Python scanner after recon).
@@ -9,7 +10,10 @@ import { verifyBearer } from "@/lib/auth";
  * Also: GET to retrieve saved endpoints (for resume).
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idCheck = parseIdParam(rawId);
+  if (!idCheck.ok) return idCheck.response;
+  const { id } = idCheck;
 
   if (!verifyBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -54,7 +58,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+  const { id: rawId } = await params;
+  const idCheck = parseIdParam(rawId);
+  if (!idCheck.ok) return idCheck.response;
+  const { id } = idCheck;
 
   const endpoints = await prisma.crawlEndpoint.findMany({
     where: { scanId: id },
