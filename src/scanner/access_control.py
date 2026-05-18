@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from src.utils.http_client import HttpClient, RequestResult
+from src.scanner.cvss import calculate as cvss_calc
 
 
 class PrivilegeLevel(str, Enum):
@@ -31,6 +32,9 @@ class AccessControlFinding:
     severity: str
     evidence: dict
     description: str
+    cvss_score: float = 0.0
+    cvss_vector: str = ""
+    cwe_id: str = ""
 
 
 # Common admin/privileged paths to probe
@@ -109,12 +113,14 @@ class AccessControlScanner:
         for method in ["PUT", "PATCH", "DELETE"]:
             result = await self._http.request(method, url, headers=headers)
             if result.status_code in (200, 201, 204) and get_result.status_code in (401, 403):
+                cv = cvss_calc("access_control_vertical")
+                severity = cv.severity if cv.vector else "high"
                 return AccessControlFinding(
                     url=url,
                     method=method,
                     expected_level=PrivilegeLevel.ADMIN,
                     actual_level=PrivilegeLevel.USER,
-                    severity="high",
+                    severity=severity,
                     evidence={
                         "get_status": get_result.status_code,
                         "bypass_method": method,
@@ -125,6 +131,9 @@ class AccessControlScanner:
                         f"GET returns {get_result.status_code} but {method} returns {result.status_code}. "
                         f"The server may not enforce authorization consistently across HTTP methods."
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 )
 
         return None
@@ -158,12 +167,14 @@ class AccessControlScanner:
                 and len(result.body) > 50
             ):
                 bypass_header = list(extra_headers.keys())[0]
+                cv = cvss_calc("access_control_vertical")
+                severity = cv.severity if cv.vector else "critical"
                 findings.append(AccessControlFinding(
                     url=url,
                     method="GET",
                     expected_level=PrivilegeLevel.ADMIN,
                     actual_level=PrivilegeLevel.PUBLIC,
-                    severity="critical",
+                    severity=severity,
                     evidence={
                         "baseline_status": baseline.status_code,
                         "bypass_header": bypass_header,
@@ -177,6 +188,9 @@ class AccessControlScanner:
                         f"'{bypass_header}: {extra_headers[bypass_header]}' returns {result.status_code} "
                         f"with {len(result.body)} bytes of content."
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 ))
 
         return findings
@@ -208,7 +222,9 @@ class AccessControlScanner:
             )
 
             if has_admin_content or len(result.body) > 500:
-                severity = "critical" if actual_level == PrivilegeLevel.PUBLIC else "high"
+                fallback_sev = "critical" if actual_level == PrivilegeLevel.PUBLIC else "high"
+                cv = cvss_calc("access_control_vertical")
+                severity = cv.severity if cv.vector else fallback_sev
                 return AccessControlFinding(
                     url=url,
                     method=method,
@@ -226,6 +242,9 @@ class AccessControlScanner:
                         f"{actual_level.value}-level request returned {result.status_code} "
                         f"with {len(result.body)} bytes. Admin content markers detected: {has_admin_content}."
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 )
 
         return None

@@ -13,6 +13,7 @@ from enum import Enum
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from src.utils.http_client import HttpClient, RequestResult
+from src.scanner.cvss import calculate as cvss_calc
 
 
 class XSSType(str, Enum):
@@ -31,6 +32,9 @@ class XSSFinding:
     severity: str
     evidence: dict
     description: str
+    cvss_score: float = 0.0
+    cvss_vector: str = ""
+    cwe_id: str = ""
 
 
 # Probe payloads — designed to detect reflection without causing harm
@@ -129,7 +133,9 @@ class XSSScanner:
 
                 # Check if payload is reflected unescaped
                 if self._is_reflected(result.body, payload, detection_pattern):
-                    severity = self._assess_severity(payload, result)
+                    fallback_severity = self._assess_severity(payload, result)
+                    cv = cvss_calc("xss_reflected")
+                    severity = cv.severity if cv.vector else fallback_severity
                     findings.append(XSSFinding(
                         url=url,
                         method="GET",
@@ -148,6 +154,9 @@ class XSSScanner:
                             f"Payload '{payload[:30]}...' is reflected unescaped in the response body. "
                             f"An attacker could craft a malicious URL to execute JavaScript in a victim's browser."
                         ),
+                        cvss_score=cv.base_score,
+                        cvss_vector=cv.vector,
+                        cwe_id=cv.cwe,
                     ))
                     break  # One finding per param is enough
 
@@ -168,13 +177,15 @@ class XSSScanner:
         for sink_pattern in DOM_SINKS:
             matches = re.findall(sink_pattern, result.body)
             if matches:
+                cv = cvss_calc("xss_dom")
+                severity = cv.severity if cv.vector else "medium"
                 findings.append(XSSFinding(
                     url=url,
                     method="GET",
                     xss_type=XSSType.DOM_BASED,
                     injection_point="javascript_sink",
                     payload=matches[0],
-                    severity="medium",
+                    severity=severity,
                     evidence={
                         "sink_pattern": sink_pattern,
                         "match_count": len(matches),
@@ -185,6 +196,9 @@ class XSSScanner:
                         f"Found {len(matches)} dangerous JavaScript sink(s) matching '{sink_pattern}'. "
                         f"If user-controlled data flows into these sinks, XSS is possible."
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 ))
                 break  # One DOM finding per URL
 

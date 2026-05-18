@@ -15,6 +15,7 @@ from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
 from src.utils.http_client import HttpClient
+from src.scanner.cvss import calculate as cvss_calc
 
 logger = logging.getLogger("differential")
 
@@ -28,6 +29,9 @@ class DiffFinding:
     severity: str      # "critical", "high", "medium", "low", "info"
     description: str
     evidence: dict
+    cvss_score: float = 0.0
+    cvss_vector: str = ""
+    cwe_id: str = ""
 
 
 class DifferentialScanner:
@@ -84,17 +88,22 @@ class DifferentialScanner:
         if not anon_result.error and anon_result.status_code == 200:
             if self._looks_like_protected_endpoint(url):
                 # Anonymous shouldn't get 200 on admin/user/account paths
+                cv = cvss_calc("differential")
+                severity = cv.severity if cv.vector else "high"
                 findings.append(DiffFinding(
                     url=url,
                     method=method,
                     finding_type="anon_leak",
-                    severity="high",
+                    severity=severity,
                     description=f"Anonymous access returns 200 on protected-looking path: {urlparse(url).path}",
                     evidence={
                         "anon_status": anon_result.status_code,
                         "anon_body_length": len(anon_result.body),
                         "anon_body_preview": anon_result.body[:500],
                     },
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 ))
 
         # ── Check: method override (GET endpoint accepts DELETE/PUT) ──
@@ -145,11 +154,14 @@ class DifferentialScanner:
 
             if similarity > 0.90 and len(body_b) > 100:
                 # Lower-priv role sees basically the same data as higher-priv
+                cv = cvss_calc("differential")
+                fallback_sev = "high" if role_a == "anonymous" else "medium"
+                severity = cv.severity if cv.vector else fallback_sev
                 return DiffFinding(
                     url=url,
                     method=method,
                     finding_type="anon_leak" if role_a == "anonymous" else "privilege_escalation",
-                    severity="high" if role_a == "anonymous" else "medium",
+                    severity=severity,
                     description=(
                         f"{role_a} response is {similarity:.0%} similar to {role_b} response "
                         f"({len(body_a)} vs {len(body_b)} bytes). "
@@ -164,15 +176,20 @@ class DifferentialScanner:
                         f"{role_a}_preview": body_a[:300],
                         f"{role_b}_preview": body_b[:300],
                     },
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 )
 
         # ── Lower-priv gets 200 but higher-priv gets 403/401 = weird ──
         if status_a == 200 and status_b in (401, 403):
+            cv = cvss_calc("differential")
+            severity = cv.severity if cv.vector else "medium"
             return DiffFinding(
                 url=url,
                 method=method,
                 finding_type="inconsistent_auth",
-                severity="medium",
+                severity=severity,
                 description=(
                     f"{role_a} gets 200 but {role_b} gets {status_b}. "
                     f"Auth logic may be inverted or inconsistent."
@@ -182,6 +199,9 @@ class DifferentialScanner:
                     f"{role_b}_status": status_b,
                     f"{role_a}_body_preview": body_a[:300],
                 },
+                cvss_score=cv.base_score,
+                cvss_vector=cv.vector,
+                cwe_id=cv.cwe,
             )
 
         return None
@@ -194,17 +214,22 @@ class DifferentialScanner:
         for method in dangerous_methods:
             result = await self._http.request(method, url, headers=headers)
             if not result.error and result.status_code in (200, 201, 204):
+                cv = cvss_calc("differential")
+                severity = cv.severity if cv.vector else "medium"
                 findings.append(DiffFinding(
                     url=url,
                     method=method,
                     finding_type="method_override",
-                    severity="medium",
+                    severity=severity,
                     description=f"Endpoint accepts {method} method (returned {result.status_code}). May allow unintended state changes.",
                     evidence={
                         "method": method,
                         "status_code": result.status_code,
                         "body_preview": result.body[:300],
                     },
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 ))
 
         return findings

@@ -3,10 +3,147 @@
  * Replaces the Python proxy; Next.js calls Intigriti directly.
  */
 
-const BASE_URL = "https://api.intigriti.com/external/researcher/v1";
+import crypto from "crypto";
+
+const DEFAULT_BASE_URL = "https://api.intigriti.com/external/researcher/v1";
+const STUB_TOKEN_SENTINEL = "stub-mode";
+
+const BASE_URL = process.env.INTIGRITI_API_URL || DEFAULT_BASE_URL;
 
 function getToken(): string {
   return process.env.INTIGRITI_API_TOKEN || "";
+}
+
+/** Mirror of src/reporter/intigriti_submitter.py SEVERITY_MAP. info => null. */
+const SEVERITY_MAP: Record<string, string | null> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+  info: null,
+};
+
+/** Mirror of src/reporter/intigriti_submitter.py TYPE_MAP. */
+const TYPE_MAP: Record<string, string> = {
+  idor: "Insecure Direct Object Reference",
+  xss: "Cross-Site Scripting",
+  sqli: "SQL Injection",
+  ssrf: "Server-Side Request Forgery",
+  csrf: "Cross-Site Request Forgery",
+  access_control: "Broken Access Control",
+  info_disclosure: "Information Disclosure",
+  differential: "Authorization Flaw",
+};
+
+export type FindingPayload = {
+  module: string;
+  severity: string;
+  title: string;
+  description: string;
+  url?: string | null;
+  evidence?: unknown;
+  cvssVector?: string | null;
+  cweId?: string | null;
+};
+
+export type SubmissionResult = {
+  submissionId: string | null;
+  status: "stubbed" | "submitted" | "deduped" | "rejected_info_severity";
+  deduped: boolean;
+  stubbed: boolean;
+};
+
+export function isStubMode(): boolean {
+  const t = getToken();
+  return !t || t === STUB_TOKEN_SENTINEL;
+}
+
+/** SHA256(programId|module|title|url|cweId) — matches Python `compute_dedup_hash`. */
+export function computeDedupHash(finding: FindingPayload, programId: string): string {
+  const material = [
+    programId,
+    finding.module ?? "",
+    finding.title ?? "",
+    finding.url ?? "",
+    finding.cweId ?? "",
+  ].join("|");
+  return crypto.createHash("sha256").update(material).digest("hex");
+}
+
+/**
+ * Submit a single confirmed finding to Intigriti.
+ * When INTIGRITI_API_TOKEN is missing or 'stub-mode', logs intent and
+ * returns a deterministic fake id without any HTTP call.
+ */
+export async function submitFinding(
+  finding: FindingPayload,
+  programId: string
+): Promise<SubmissionResult> {
+  const dedupHash = computeDedupHash(finding, programId);
+  const severityLabel = SEVERITY_MAP[(finding.severity || "").toLowerCase()];
+
+  if (severityLabel === null || severityLabel === undefined) {
+    return {
+      submissionId: null,
+      status: "rejected_info_severity",
+      deduped: false,
+      stubbed: isStubMode(),
+    };
+  }
+
+  if (isStubMode()) {
+    const stubId = `stub-${dedupHash.slice(0, 12)}`;
+    console.log(`[STUB] would submit ${finding.title} to ${programId}`);
+    return {
+      submissionId: stubId,
+      status: "stubbed",
+      deduped: false,
+      stubbed: true,
+    };
+  }
+
+  const payload: Record<string, unknown> = {
+    programId,
+    title: finding.title,
+    description: finding.description,
+    severity: severityLabel,
+    type: TYPE_MAP[(finding.module || "").toLowerCase()] || "Other",
+  };
+  if (finding.url) payload.endpoint = finding.url;
+  if (finding.evidence) payload.evidence = finding.evidence;
+  if (finding.cvssVector) payload.cvssVector = finding.cvssVector;
+  if (finding.cweId) payload.cweId = finding.cweId;
+
+  const res = await fetch(`${BASE_URL}/submissions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${getToken()}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new Error(`Intigriti submit failed: ${res.status} ${res.statusText}`);
+  }
+
+  const data = (await res.json()) as Record<string, unknown>;
+  const submissionId =
+    (data.id as string) ||
+    (data.submissionId as string) ||
+    (data.submission_id as string) ||
+    "";
+  if (!submissionId) {
+    throw new Error("Intigriti response missing submission id");
+  }
+  return {
+    submissionId,
+    status: "submitted",
+    deduped: false,
+    stubbed: false,
+  };
 }
 
 async function intigritiGet(path: string, params?: Record<string, string>) {

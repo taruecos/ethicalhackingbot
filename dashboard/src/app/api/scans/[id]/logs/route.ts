@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { verifyBearer } from "@/lib/auth";
-import { parseIdParam, parseSearchParams } from "@/lib/validation";
+import { parseIdParam, parseJsonBody, parseSearchParams } from "@/lib/validation";
 
-const VALID_LEVELS = new Set(["INFO", "WARN", "ERROR", "DEBUG", "CRITICAL"]);
+const LOG_LEVELS = ["INFO", "WARN", "ERROR", "DEBUG", "CRITICAL"] as const;
+const VALID_LEVELS = new Set<string>(LOG_LEVELS);
 
 const logsQuerySchema = z
   .object({
@@ -23,12 +24,24 @@ const logsQuerySchema = z
 const MAX_BATCH = 500;
 const MAX_MESSAGE_LEN = 4000;
 
-type IncomingLog = {
-  level?: unknown;
-  module?: unknown;
-  message?: unknown;
-  timestamp?: unknown;
-};
+// Single log entry. Loose-ish to mirror what the scanner already sends
+// (the route normalises level + truncates strings before insert).
+const logEntrySchema = z
+  .object({
+    level: z.string().max(20).optional(),
+    module: z.string().max(64).optional(),
+    message: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+    timestamp: z.string().max(64).optional(),
+  })
+  .passthrough();
+
+// Existing route key is `logs` (not `entries`); keep it to avoid breaking
+// the Python scanner. Cap batch at MAX_BATCH (we additionally slice below).
+const logsBodySchema = z
+  .object({
+    logs: z.array(logEntrySchema).max(MAX_BATCH),
+  })
+  .strict();
 
 /**
  * Bot callback — append a batch of log entries for a scan.
@@ -50,15 +63,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "Scan not found" }, { status: 404 });
   }
 
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const parsed = await parseJsonBody(req, logsBodySchema);
+  if (!parsed.ok) return parsed.response;
+  const incoming = parsed.data.logs;
 
-  const incoming = (body as { logs?: IncomingLog[] })?.logs;
-  if (!Array.isArray(incoming) || incoming.length === 0) {
+  if (incoming.length === 0) {
     return NextResponse.json({ error: "No logs provided" }, { status: 400 });
   }
 
@@ -72,8 +81,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         : String(entry.message ?? "").slice(0, MAX_MESSAGE_LEN);
     let timestamp: Date | undefined;
     if (typeof entry.timestamp === "string") {
-      const parsed = new Date(entry.timestamp);
-      if (!Number.isNaN(parsed.getTime())) timestamp = parsed;
+      const parsedDate = new Date(entry.timestamp);
+      if (!Number.isNaN(parsedDate.getTime())) timestamp = parsedDate;
     }
     return {
       scanId: id,

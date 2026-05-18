@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 
 from src.utils.http_client import HttpClient, RequestResult
+from src.scanner.cvss import calculate as cvss_calc
 
 
 @dataclass
@@ -22,6 +23,9 @@ class InfoDisclosureFinding:
     leaked_data: str  # sanitized excerpt
     evidence: dict
     description: str
+    cvss_score: float = 0.0
+    cvss_vector: str = ""
+    cwe_id: str = ""
 
 
 # Regex patterns for sensitive data in responses
@@ -75,6 +79,22 @@ LEAK_HEADERS = [
 ]
 
 
+def _info_vuln_class(disclosure_type: str, path: str = "") -> str:
+    """Map an info-disclosure type or path to a CVSS vuln class."""
+    dt = disclosure_type.lower()
+    p = path.lower()
+    if "env" in dt or ".env" in p:
+        return "info_disclosure_env"
+    if "git" in dt or "/.git" in p:
+        return "info_disclosure_git"
+    if "debug" in dt or "stack_trace" in dt or "/debug" in p or "/status" in p or "header_leak" in dt:
+        return "info_disclosure_debug"
+    if "bak" in dt or ".bak" in p or "backup" in dt or "swagger" in p or "openapi" in p or "api_docs" in dt:
+        return "info_disclosure_backup"
+    # Generic sensitive data (keys, tokens, PII) -> treat as backup-class (HIGH 7.5)
+    return "info_disclosure_backup"
+
+
 class InfoDisclosureScanner:
     """Scans for information disclosure vulnerabilities."""
 
@@ -91,10 +111,12 @@ class InfoDisclosureScanner:
             if matches:
                 # Sanitize — don't store full secrets
                 sample = str(matches[0])[:20] + "..." if len(str(matches[0])) > 20 else str(matches[0])
+                cv = cvss_calc(_info_vuln_class(name, url))
+                final_severity = cv.severity if cv.vector else severity
                 findings.append(InfoDisclosureFinding(
                     url=url,
                     disclosure_type=name,
-                    severity=severity,
+                    severity=final_severity,
                     leaked_data=sample,
                     evidence={
                         "match_count": len(matches),
@@ -107,16 +129,21 @@ class InfoDisclosureScanner:
                         f"Found {len(matches)} instance(s) of {name} pattern in the response body. "
                         f"Sample (truncated): {sample}"
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 ))
 
         # Check headers for tech leaks
         for header in LEAK_HEADERS:
             value = response.headers.get(header)
             if value:
+                cv = cvss_calc("info_disclosure_debug")
+                severity = cv.severity if cv.vector else "low"
                 findings.append(InfoDisclosureFinding(
                     url=url,
                     disclosure_type=f"header_leak_{header}",
-                    severity="low",
+                    severity=severity,
                     leaked_data=value,
                     evidence={
                         "header": header,
@@ -126,6 +153,9 @@ class InfoDisclosureScanner:
                         f"Technology disclosure via '{header}' header at {url}. "
                         f"Value: {value}. This reveals server technology which aids attackers."
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 ))
 
         return findings
@@ -145,10 +175,12 @@ class InfoDisclosureScanner:
 
                 # Special cases
                 if path == "/.env" and "=" in result.body:
+                    cv = cvss_calc("info_disclosure_env")
+                    severity = cv.severity if cv.vector else "critical"
                     findings.append(InfoDisclosureFinding(
                         url=url,
                         disclosure_type="env_file_exposed",
-                        severity="critical",
+                        severity=severity,
                         leaked_data=result.body[:100] + "...",
                         evidence={
                             "status_code": result.status_code,
@@ -160,13 +192,18 @@ class InfoDisclosureScanner:
                             f"The .env file is publicly accessible and may contain "
                             f"database credentials, API keys, and other secrets."
                         ),
+                        cvss_score=cv.base_score,
+                        cvss_vector=cv.vector,
+                        cwe_id=cv.cwe,
                     ))
 
                 if path in ("/.git/config", "/.git/HEAD"):
+                    cv = cvss_calc("info_disclosure_git")
+                    severity = cv.severity if cv.vector else "high"
                     findings.append(InfoDisclosureFinding(
                         url=url,
                         disclosure_type="git_exposed",
-                        severity="high",
+                        severity=severity,
                         leaked_data=result.body[:100],
                         evidence={
                             "status_code": result.status_code,
@@ -177,13 +214,18 @@ class InfoDisclosureScanner:
                             f"The .git directory is accessible, potentially allowing "
                             f"full source code download and commit history access."
                         ),
+                        cvss_score=cv.base_score,
+                        cvss_vector=cv.vector,
+                        cwe_id=cv.cwe,
                     ))
 
                 if "swagger" in path or "openapi" in path:
+                    cv = cvss_calc("info_disclosure_backup")
+                    severity = cv.severity if cv.vector else "medium"
                     findings.append(InfoDisclosureFinding(
                         url=url,
                         disclosure_type="api_docs_exposed",
-                        severity="medium",
+                        severity=severity,
                         leaked_data=f"API documentation at {url}",
                         evidence={
                             "status_code": result.status_code,
@@ -194,6 +236,9 @@ class InfoDisclosureScanner:
                             f"Public API docs reveal endpoint structure, parameters, "
                             f"and may include internal endpoints."
                         ),
+                        cvss_score=cv.base_score,
+                        cvss_vector=cv.vector,
+                        cwe_id=cv.cwe,
                     ))
 
         return findings

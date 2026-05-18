@@ -201,13 +201,33 @@ class EndpointCrawler:
 
         # ── robots.txt ──
         robots_result = await self._http.get(f"{origin}/robots.txt", headers=auth_headers)
+        sitemap_urls_from_robots: list[str] = []
         if not robots_result.error and robots_result.status_code == 200:
-            seeds.extend(self._parse_robots_txt(origin, robots_result.body))
+            robot_paths, sitemap_urls_from_robots = self._parse_robots_txt(origin, robots_result.body)
+            seeds.extend(robot_paths)
 
         # ── sitemap.xml ──
         sitemap_result = await self._http.get(f"{origin}/sitemap.xml", headers=auth_headers)
         if not sitemap_result.error and sitemap_result.status_code == 200:
             seeds.extend(self._parse_sitemap(origin, sitemap_result.body))
+
+        # ── additional sitemaps listed in robots.txt ──
+        # Cap at 5 nested sitemaps to avoid runaway recursion, and 1000 URLs
+        # total across all sitemaps to keep attacker-controlled sitemaps from
+        # exploding the crawl scope.
+        SITEMAP_TOTAL_URL_CAP = 1000
+        sitemap_url_count = 0
+        for nested_sitemap_url in sitemap_urls_from_robots[:5]:
+            if sitemap_url_count >= SITEMAP_TOTAL_URL_CAP:
+                break
+            nested_result = await self._http.get(nested_sitemap_url, headers=auth_headers)
+            if nested_result.error or nested_result.status_code != 200:
+                continue
+            nested_urls = self._parse_sitemap(origin, nested_result.body)
+            remaining = SITEMAP_TOTAL_URL_CAP - sitemap_url_count
+            nested_urls = nested_urls[:remaining]
+            seeds.extend(nested_urls)
+            sitemap_url_count += len(nested_urls)
 
         # ── .well-known/security.txt ──
         sec_result = await self._http.get(f"{origin}/.well-known/security.txt", headers=auth_headers)
@@ -218,8 +238,13 @@ class EndpointCrawler:
         logger.info(f"Pre-crawl recon: {len(seeds)} extra seed URLs from robots.txt/sitemap")
         return seeds
 
-    def _parse_robots_txt(self, origin: str, body: str) -> list[str]:
-        """Extract paths from robots.txt — both Allowed and Disallowed are interesting."""
+    def _parse_robots_txt(self, origin: str, body: str) -> tuple[list[str], list[str]]:
+        """Extract paths and sitemap URLs from robots.txt.
+
+        Both Allowed and Disallowed paths are interesting — disallowed paths
+        especially are gold because they're hidden for a reason. Sitemap URLs
+        are returned separately so the caller can fetch and parse them.
+        """
         paths: list[str] = []
         sitemap_urls: list[str] = []
 
@@ -239,14 +264,18 @@ class EndpointCrawler:
                 # Disallowed paths are gold — they're hidden for a reason
                 full_url = urljoin(origin, value)
                 paths.append(full_url)
-            elif directive == "sitemap":
+            elif directive == "sitemap" and value:
                 sitemap_urls.append(value)
 
-        # TODO: fetch additional sitemaps from robots.txt
-        return paths
+        return paths, sitemap_urls
 
     def _parse_sitemap(self, origin: str, body: str) -> list[str]:
-        """Extract URLs from sitemap.xml (handles both index and urlset)."""
+        """Extract URLs from sitemap.xml (handles both index and urlset).
+
+        Caps at 200 URLs per sitemap to avoid crawling enormous sitemaps.
+        When called from nested sitemap parsing, the caller is responsible
+        for enforcing the total cross-sitemap cap.
+        """
         urls: list[str] = []
         # Simple regex extraction — works for both sitemap index and urlset
         loc_pattern = re.compile(r'<loc>\s*(.*?)\s*</loc>', re.IGNORECASE)

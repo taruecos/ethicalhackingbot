@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 
 from src.utils.http_client import HttpClient, RequestResult
+from src.scanner.cvss import calculate as cvss_calc
 
 
 @dataclass
@@ -24,6 +25,9 @@ class CSRFFinding:
     severity: str
     evidence: dict
     description: str
+    cvss_score: float = 0.0
+    cvss_vector: str = ""
+    cwe_id: str = ""
 
 
 # CSRF token patterns in HTML forms
@@ -93,7 +97,9 @@ class CSRFScanner:
         if not has_form_token and not has_samesite:
             # No CSRF token in form AND no SameSite cookies
             if result.status_code in (200, 201, 204, 302):
-                severity = "high" if method.upper() in ("POST", "DELETE") else "medium"
+                fallback_sev = "high" if method.upper() in ("POST", "DELETE") else "medium"
+                cv = cvss_calc("csrf")
+                severity = cv.severity if cv.vector else fallback_sev
                 findings.append(CSRFFinding(
                     url=url,
                     method=method.upper(),
@@ -111,16 +117,21 @@ class CSRFScanner:
                         f"and the endpoint accepts {method.upper()} requests without a CSRF token "
                         f"(returned {result.status_code}). An attacker could forge requests on behalf of authenticated users."
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 ))
 
         elif not has_form_token and has_samesite:
             # SameSite protects modern browsers but not older ones
             if result.status_code in (200, 201, 204, 302):
+                cv = cvss_calc("csrf")
+                severity = cv.severity if cv.vector else "medium"
                 findings.append(CSRFFinding(
                     url=url,
                     method=method.upper(),
                     missing_protection="csrf_token",
-                    severity="medium",
+                    severity=severity,
                     evidence={
                         "has_form_token": False,
                         "has_samesite_cookie": True,
@@ -131,6 +142,9 @@ class CSRFScanner:
                         f"SameSite cookie attribute is set (protects modern browsers), "
                         f"but no CSRF token was found. Older browsers without SameSite support remain vulnerable."
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 ))
 
         # Step 5: Test Origin header validation
@@ -159,11 +173,13 @@ class CSRFScanner:
         )
 
         if result.status_code in (200, 201, 204):
+            cv = cvss_calc("csrf")
+            severity = cv.severity if cv.vector else "medium"
             return CSRFFinding(
                 url=url,
                 method=method.upper(),
                 missing_protection="origin_validation",
-                severity="medium",
+                severity=severity,
                 evidence={
                     "spoofed_origin": "https://evil-attacker.com",
                     "accepted_status": result.status_code,
@@ -175,6 +191,9 @@ class CSRFScanner:
                     f"and returned {result.status_code}. This suggests the server does not "
                     f"validate the request origin, enabling cross-origin request forgery."
                 ),
+                cvss_score=cv.base_score,
+                cvss_vector=cv.vector,
+                cwe_id=cv.cwe,
             )
 
         return None
