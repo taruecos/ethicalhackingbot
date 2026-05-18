@@ -1,7 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { verifyBearer } from "@/lib/auth";
-import { parseIdParam } from "@/lib/validation";
+import { parseIdParam, parseJsonBody } from "@/lib/validation";
+
+const checkpointBodySchema = z
+  .object({
+    lastModule: z.number().int().min(0).max(8),
+    lastModuleName: z.string().max(50),
+    endpointsTotal: z.number().int().min(0),
+    findingsCount: z.number().int().min(0),
+    stats: z.record(z.string(), z.unknown()).optional(),
+    phase: z.string().max(30).optional(),
+    progress: z.number().min(0).max(100).optional(),
+  })
+  .strict();
 
 /**
  * Save/update scan checkpoint (called by Python scanner after each module).
@@ -24,27 +38,29 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: "Scan not found" }, { status: 404 });
   }
 
-  const body = await req.json();
-  const { lastModule, lastModuleName, endpointsTotal, findingsCount, stats, phase, progress } = body;
+  const parsed = await parseJsonBody(req, checkpointBodySchema);
+  if (!parsed.ok) return parsed.response;
+  const { lastModule, lastModuleName, endpointsTotal, findingsCount, stats, phase, progress } =
+    parsed.data;
 
   const checkpoint = await prisma.scanCheckpoint.upsert({
     where: { scanId: id },
     update: {
-      lastModule: lastModule ?? undefined,
-      lastModuleName: lastModuleName ?? undefined,
-      endpointsTotal: endpointsTotal ?? undefined,
-      findingsCount: findingsCount ?? undefined,
-      stats: stats ?? undefined,
+      lastModule,
+      lastModuleName,
+      endpointsTotal,
+      findingsCount,
+      stats: (stats ?? undefined) as Prisma.InputJsonValue | undefined,
       phase: phase ?? undefined,
       progress: progress ?? undefined,
     },
     create: {
       scanId: id,
-      lastModule: lastModule ?? 0,
-      lastModuleName: lastModuleName ?? "",
-      endpointsTotal: endpointsTotal ?? 0,
-      findingsCount: findingsCount ?? 0,
-      stats: stats ?? {},
+      lastModule,
+      lastModuleName,
+      endpointsTotal,
+      findingsCount,
+      stats: (stats ?? {}) as Prisma.InputJsonValue,
       phase: phase ?? "recon",
       progress: progress ?? 0,
     },

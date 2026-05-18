@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { parseIdParam } from "@/lib/validation";
+
+const relaunchBodySchema = z
+  .object({
+    resume: z.boolean().optional(),
+  })
+  .strict();
 
 /**
  * Relaunch a scan that is COMPLETE, ERROR, or CANCELLED.
@@ -32,7 +39,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  const body = await req.json().catch(() => ({}));
+  // Body is optional — treat missing/empty as `{}`. If present, validate.
+  let body: z.infer<typeof relaunchBodySchema> = {};
+  const contentLength = Number(req.headers.get("content-length") || 0);
+  if (contentLength > 0) {
+    let raw: unknown;
+    try {
+      raw = await req.json();
+    } catch {
+      // Tolerate junk bodies (original used `.catch(() => ({}))`).
+      raw = {};
+    }
+    const result = relaunchBodySchema.safeParse(raw);
+    if (!result.success) {
+      return NextResponse.json(
+        { error: "Invalid request body", details: result.error.format() },
+        { status: 400 }
+      );
+    }
+    body = result.data;
+  }
+
   const wantsResume = body.resume === true;
   const canResume = wantsResume && scan.checkpoint !== null;
 

@@ -79,3 +79,46 @@ export function parseSearchParams<T extends ZodSchema>(
   }
   return { ok: true, data: result.data };
 }
+
+/**
+ * Parse a request JSON body against a Zod schema. On parse failure or
+ * schema failure, return a 400 NextResponse. On success, return the
+ * parsed, typed data.
+ *
+ * Mirrors `parseSearchParams` style so all route handlers can use the
+ * same `if (!parsed.ok) return parsed.response;` pattern.
+ */
+export async function parseJsonBody<T extends ZodSchema>(
+  req: Request,
+  schema: T
+): Promise<
+  | { ok: true; data: z.infer<T> }
+  | { ok: false; response: NextResponse }
+> {
+  let raw: unknown;
+  try {
+    raw = await req.json();
+  } catch {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Invalid JSON body" },
+        { status: 400 }
+      ),
+    };
+  }
+  const result = schema.safeParse(raw);
+  if (!result.success) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        {
+          error: "Invalid request body",
+          details: result.error.format(),
+        },
+        { status: 400 }
+      ),
+    };
+  }
+  return { ok: true, data: result.data };
+}

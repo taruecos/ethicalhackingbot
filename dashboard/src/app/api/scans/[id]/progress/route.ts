@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { Prisma, ScanStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { verifyBearer } from "@/lib/auth";
-import { parseIdParam } from "@/lib/validation";
+import { parseIdParam, parseJsonBody } from "@/lib/validation";
 
 // Scanner sends lowercase status strings ("running", "complete", "error",
 // "cancelled", "blocked"). Prisma enum requires uppercase. Map at the boundary.
@@ -27,6 +28,37 @@ function normalizeStatus(raw: unknown): ScanStatus | null {
   }
 }
 
+// Spec requires phase enum + 0-100 progress for the canonical callback,
+// but the existing endpoint also accepts status/phases/findings/duration/error
+// from the scanner. Keep a permissive superset so we don't break the worker;
+// just validate shapes and bound sizes.
+const findingSchema = z
+  .object({
+    severity: z.string().max(20).optional(),
+    module: z.string().max(50).optional(),
+    confidence: z.number().min(0).max(1).optional(),
+    title: z.string().max(500).optional(),
+    description: z.string().max(10000).optional(),
+    url: z.string().max(2000).nullable().optional(),
+    evidence: z.unknown().optional(),
+  })
+  .passthrough();
+
+const progressBodySchema = z
+  .object({
+    // Canonical fields per task spec.
+    phase: z.enum(["recon", "scan", "report", "done"]).optional(),
+    progress: z.number().min(0).max(100).optional(),
+    message: z.string().max(500).optional(),
+    // Extra fields the scanner already pushes; keep them validated but optional.
+    status: z.string().max(30).optional(),
+    phases: z.unknown().optional(),
+    findings: z.array(findingSchema).max(10000).optional(),
+    duration: z.number().min(0).optional(),
+    error: z.string().max(5000).optional(),
+  })
+  .strict();
+
 /**
  * Bot callback endpoint — receives scan progress updates from the Python bot.
  * PATCH /api/scans/:id/progress
@@ -41,8 +73,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = await req.json();
-  const { status, phases, findings, duration, error } = body;
+  const parsed = await parseJsonBody(req, progressBodySchema);
+  if (!parsed.ok) return parsed.response;
+  const { status, phases, findings, duration, error } = parsed.data;
 
   // Validate scan exists
   const scan = await prisma.scan.findUnique({ where: { id } });
@@ -78,7 +111,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   // If findings are provided, create them in DB
   if (findings && Array.isArray(findings) && findings.length > 0) {
-    const findingData = findings.map((f: Record<string, unknown>) => {
+    const findingData = findings.map((f) => {
       const severity = ((f.severity as string) || "INFO").toUpperCase();
       return {
         scanId: id,

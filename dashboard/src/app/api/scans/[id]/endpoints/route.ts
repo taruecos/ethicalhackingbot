@@ -1,7 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { verifyBearer } from "@/lib/auth";
-import { parseIdParam } from "@/lib/validation";
+import { parseIdParam, parseJsonBody } from "@/lib/validation";
+
+const endpointSchema = z
+  .object({
+    url: z.string().url(),
+    method: z.string().max(10),
+    params: z.unknown().optional(),
+    source: z.string().max(100).optional(),
+  })
+  .strict();
+
+const endpointsBodySchema = z
+  .object({
+    endpoints: z.array(endpointSchema).max(5000),
+  })
+  .strict();
 
 /**
  * Save crawled endpoints for a scan (called by Python scanner after recon).
@@ -24,10 +40,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "Scan not found" }, { status: 404 });
   }
 
-  const body = await req.json();
-  const { endpoints } = body as { endpoints: Array<{ url: string; method: string; params?: unknown; source?: string }> };
+  const parsed = await parseJsonBody(req, endpointsBodySchema);
+  if (!parsed.ok) return parsed.response;
+  const { endpoints } = parsed.data;
 
-  if (!endpoints || !Array.isArray(endpoints) || endpoints.length === 0) {
+  if (endpoints.length === 0) {
     return NextResponse.json({ error: "No endpoints provided" }, { status: 400 });
   }
 

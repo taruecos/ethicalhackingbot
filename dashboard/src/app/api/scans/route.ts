@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { parseSearchParams } from "@/lib/validation";
+import {
+  idParamSchema,
+  parseJsonBody,
+  parseSearchParams,
+} from "@/lib/validation";
 
 const SCAN_STATUS_VALUES = [
   "QUEUED",
@@ -14,6 +18,55 @@ const SCAN_STATUS_VALUES = [
 const scansQuerySchema = z
   .object({
     status: z.enum(SCAN_STATUS_VALUES).optional(),
+  })
+  .strict();
+
+const SCAN_MODULES = [
+  "idor",
+  "xss",
+  "sqli",
+  "ssrf",
+  "csrf",
+  "access_control",
+  "info_disclosure",
+  "differential",
+] as const;
+
+const SCAN_DEPTHS = ["quick", "standard", "deep"] as const;
+
+// Domain must be a bare hostname: no protocol, no path, max 253 chars.
+const domainSchema = z
+  .string()
+  .max(253, "domain too long")
+  .regex(
+    /^[a-z0-9.-]+\.[a-z]{2,}$/,
+    "domain must be a bare hostname (no protocol or path)"
+  );
+
+const rulesOfEngagementSchema = z
+  .object({
+    safeHarbour: z.literal(true, { message: "safeHarbour must be true" }),
+    userAgent: z.string().max(200).optional(),
+    customHeaders: z
+      .record(z.string(), z.string())
+      .refine(
+        (rec) => Object.keys(rec).length <= 20,
+        "customHeaders may have at most 20 entries"
+      )
+      .optional(),
+    excludePaths: z.array(z.string()).max(50).optional(),
+  })
+  .strict();
+
+const createScanBodySchema = z
+  .object({
+    domain: domainSchema,
+    programId: idParamSchema.optional(),
+    depth: z.enum(SCAN_DEPTHS).default("standard"),
+    modules: z.array(z.enum(SCAN_MODULES)).max(8).default([]),
+    rateLimit: z.number().int().min(1).max(100).default(30),
+    scope: z.array(z.string().max(253)).max(50).default([]),
+    rulesOfEngagement: rulesOfEngagementSchema,
   })
   .strict();
 
@@ -35,14 +88,14 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const { domain, programId, depth, modules, rateLimit, scope, rulesOfEngagement } = body;
+  const parsed = await parseJsonBody(req, createScanBodySchema);
+  if (!parsed.ok) return parsed.response;
+  const { domain, programId, depth, modules, rateLimit, scope, rulesOfEngagement } =
+    parsed.data;
 
-  if (!domain) {
-    return NextResponse.json({ error: "Domain required" }, { status: 400 });
-  }
-
-  // HARD BLOCK: refuse to create scan without safe harbour protection
+  // HARD BLOCK: refuse to create scan without safe harbour protection.
+  // Zod already enforces this structurally, but keep the runtime check
+  // for compliance reasoning / belt-and-suspenders.
   if (!rulesOfEngagement || !rulesOfEngagement.safeHarbour) {
     return NextResponse.json(
       { error: "BLOCKED — no safe harbour protection. Cannot create scan without legal safe harbour." },
@@ -58,11 +111,11 @@ export async function POST(req: NextRequest) {
       target,
       status: "QUEUED",
       config: {
-        depth: depth || "standard",
-        modules: modules || [],
-        rateLimit: rateLimit || 30,
-        scope: scope || [],
-        rulesOfEngagement: rulesOfEngagement || null,
+        depth,
+        modules,
+        rateLimit,
+        scope,
+        rulesOfEngagement,
       },
       programId: programId || null,
     },

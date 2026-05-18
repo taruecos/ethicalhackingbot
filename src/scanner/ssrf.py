@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from src.utils.http_client import HttpClient, RequestResult
+from src.scanner.cvss import calculate as cvss_calc
 
 
 @dataclass
@@ -24,6 +25,9 @@ class SSRFFinding:
     severity: str
     evidence: dict
     description: str
+    cvss_score: float = 0.0
+    cvss_vector: str = ""
+    cwe_id: str = ""
 
 
 # Parameters commonly used for URL/file fetching
@@ -77,6 +81,15 @@ SSRF_SUCCESS_INDICATORS = [
     # Generic server responses
     re.compile(r"(?i)apache|nginx|iis.*server"),
 ]
+
+
+def _ssrf_vuln_class(probe_type: str) -> str:
+    """Map an SSRF probe type to the corresponding CVSS vuln class."""
+    if "metadata" in probe_type:
+        return "ssrf_metadata"
+    if probe_type == "file_protocol":
+        return "ssrf_file"
+    return "ssrf_basic"
 
 
 class SSRFScanner:
@@ -137,12 +150,16 @@ class SSRFScanner:
                     break  # Path doesn't exist, skip remaining probes
 
                 if self._indicates_ssrf(result, probe_type):
+                    vuln_class = _ssrf_vuln_class(probe_type)
+                    cv = cvss_calc(vuln_class)
+                    fallback_sev = "critical" if "metadata" in probe_type else "high"
+                    severity = cv.severity if cv.vector else fallback_sev
                     findings.append(SSRFFinding(
                         url=f"{base_url.rstrip('/')}{path}",
                         method="GET",
                         injection_point=f"path:{path}",
                         payload=payload,
-                        severity="critical" if "metadata" in probe_type else "high",
+                        severity=severity,
                         evidence={
                             "probe_type": probe_type,
                             "status_code": result.status_code,
@@ -155,6 +172,9 @@ class SSRFScanner:
                             f"{result.status_code} with {len(result.body)} bytes. "
                             f"This allows an attacker to access internal services and cloud metadata."
                         ),
+                        cvss_score=cv.base_score,
+                        cvss_vector=cv.vector,
+                        cwe_id=cv.cwe,
                     ))
                     break  # One finding per path
 
@@ -188,7 +208,10 @@ class SSRFScanner:
                 continue
 
             if self._indicates_ssrf(result, probe_type):
-                severity = "critical" if "metadata" in probe_type or "file" in probe_type else "high"
+                vuln_class = _ssrf_vuln_class(probe_type)
+                cv = cvss_calc(vuln_class)
+                fallback_sev = "critical" if "metadata" in probe_type or "file" in probe_type else "high"
+                severity = cv.severity if cv.vector else fallback_sev
                 findings.append(SSRFFinding(
                     url=url,
                     method="GET",
@@ -210,6 +233,9 @@ class SSRFScanner:
                         f"{baseline.status_code}, {len(baseline.body)} bytes). "
                         f"Probe type: {probe_type}."
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 ))
                 break  # One finding per param per probe type
 

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from src.utils.http_client import HttpClient, RequestResult
+from src.scanner.cvss import calculate as cvss_calc
 
 
 class IDORType(str, Enum):
@@ -44,6 +45,9 @@ class IDORFinding:
     severity: str  # low, medium, high, critical
     evidence: dict  # original vs swapped response comparison
     description: str
+    cvss_score: float = 0.0
+    cvss_vector: str = ""
+    cwe_id: str = ""
 
 
 # Patterns that look like IDs in URLs
@@ -134,7 +138,9 @@ class IDORScanner:
 
             # Analyze: if we get 200 with different data, it's likely IDOR
             if self._is_idor(original_response, swapped_response, candidate.original_id, test_id):
-                severity = self._assess_severity(original_response, swapped_response)
+                fallback_severity = self._assess_severity(original_response, swapped_response)
+                cv = cvss_calc("idor")
+                severity = cv.severity if cv.vector else fallback_severity
                 return IDORFinding(
                     url=candidate.url,
                     method=candidate.method,
@@ -151,6 +157,9 @@ class IDORScanner:
                         "data_differs": original_response.body != swapped_response.body,
                     },
                     description=self._generate_description(candidate, test_id, swapped_response),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 )
 
         return None

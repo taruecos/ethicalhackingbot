@@ -14,6 +14,7 @@ from enum import Enum
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from src.utils.http_client import HttpClient, RequestResult
+from src.scanner.cvss import calculate as cvss_calc
 
 
 class SQLiType(str, Enum):
@@ -33,6 +34,9 @@ class SQLiFinding:
     severity: str
     evidence: dict
     description: str
+    cvss_score: float = 0.0
+    cvss_vector: str = ""
+    cwe_id: str = ""
 
 
 # Error-based detection: payloads that trigger SQL errors
@@ -148,13 +152,17 @@ class SQLiScanner:
                 if pattern.search(result.body):
                     # Verify it's not in the baseline
                     if not pattern.search(baseline.body):
+                        # UNION-based payloads get the sqli_union vector; otherwise sqli_error
+                        vuln_class = "sqli_union" if "UNION" in payload.upper() else "sqli_error"
+                        cv = cvss_calc(vuln_class)
+                        severity = cv.severity if cv.vector else "critical"
                         return SQLiFinding(
                             url=url,
                             method="GET",
                             sqli_type=SQLiType.ERROR_BASED,
                             injection_point=f"query_param:{param_name}",
                             payload=payload,
-                            severity="critical",
+                            severity=severity,
                             evidence={
                                 "param": param_name,
                                 "error_pattern": pattern.pattern,
@@ -166,6 +174,9 @@ class SQLiScanner:
                                 f"Payload '{payload}' triggered a database error message in the response. "
                                 f"This confirms the parameter is directly interpolated into SQL queries."
                             ),
+                            cvss_score=cv.base_score,
+                            cvss_vector=cv.vector,
+                            cwe_id=cv.cwe,
                         )
 
         return None
@@ -200,13 +211,15 @@ class SQLiScanner:
 
             # If TRUE and FALSE produce significantly different responses, likely SQLi
             if self._responses_differ_significantly(true_result, false_result):
+                cv = cvss_calc("sqli_blind")
+                severity = cv.severity if cv.vector else "high"
                 return SQLiFinding(
                     url=url,
                     method="GET",
                     sqli_type=SQLiType.BOOLEAN_BASED,
                     injection_point=f"query_param:{param_name}",
                     payload=true_payload,
-                    severity="high",
+                    severity=severity,
                     evidence={
                         "param": param_name,
                         "true_status": true_result.status_code,
@@ -221,6 +234,9 @@ class SQLiScanner:
                         f"while FALSE condition ('{false_payload}') produces {len(false_result.body)} bytes. "
                         f"This behavioral difference indicates SQL injection."
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 )
 
         return None
@@ -253,13 +269,15 @@ class SQLiScanner:
 
             # If response took significantly longer than baseline + expected delay
             if elapsed >= baseline_time + expected_delay - 0.5:
+                cv = cvss_calc("sqli_time")
+                severity = cv.severity if cv.vector else "high"
                 return SQLiFinding(
                     url=url,
                     method="GET",
                     sqli_type=SQLiType.TIME_BASED,
                     injection_point=f"query_param:{param_name}",
                     payload=payload,
-                    severity="high",
+                    severity=severity,
                     evidence={
                         "param": param_name,
                         "baseline_time_ms": round(baseline_time * 1000),
@@ -274,6 +292,9 @@ class SQLiScanner:
                         f"(expected {expected_delay}s delay). "
                         f"The time difference confirms the SQL payload is executed server-side."
                     ),
+                    cvss_score=cv.base_score,
+                    cvss_vector=cv.vector,
+                    cwe_id=cv.cwe,
                 )
 
         return None
